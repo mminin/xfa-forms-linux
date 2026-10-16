@@ -150,6 +150,7 @@ Poppler (`patches/poppler/`, about 12,300 added lines):
 | 0018 | Picture clauses for display, editing and validation; validation results |
 | 0019 | Pagination: page breaks after objects, keeping objects together, repeated table headers |
 | 0020 | `xfa.host.setFocus()`: scripts move the viewer to a field |
+| 0021 | Viewers answer the questions and prompts of scripts (glib API; Evince does not use it yet) |
 
 Evince (`patches/evince/`, about 650 added lines):
 

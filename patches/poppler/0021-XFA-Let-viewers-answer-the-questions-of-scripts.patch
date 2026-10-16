@@ -1,0 +1,434 @@
+From cb059ee1fc7a4e5f9ddaa4cb8e35cd5ab14030c0 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:33:30 -0700
+Subject: [PATCH] XFA: Let viewers answer the questions of scripts
+
+Message boxes asking Yes or No, such as "Do you want to clear all data
+on this form?", were answered Yes before the user saw them. Viewers can
+now answer them, and the prompts of xfa.host.response(), while scripts
+wait, with poppler_document_xfa_set_dialog_funcs(). Without these
+functions questions are answered as before.
+
+app.alert() and app.response() also take their arguments as one object.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/poppler-document.cc            | 56 ++++++++++++++++++++
+ glib/poppler-document.h             | 71 +++++++++++++++++++++++++
+ glib/reference/poppler-sections.txt |  5 ++
+ glib/tests/check_xfa.c              | 81 +++++++++++++++++++++++++++++
+ poppler/XFAForm.cc                  | 17 ++++++
+ poppler/XFAForm.h                   | 17 ++++++
+ poppler/XFAScript.cc                | 36 +++++++++----
+ 7 files changed, 273 insertions(+), 10 deletions(-)
+
+diff --git a/glib/poppler-document.cc b/glib/poppler-document.cc
+index 6c04a6e..54ae812 100644
+--- a/glib/poppler-document.cc
++++ b/glib/poppler-document.cc
+@@ -2498,6 +2498,62 @@ gchar *poppler_document_xfa_take_focus_request(PopplerDocument *document)
+     return requests.empty() ? nullptr : g_strdup(requests.back().text.c_str());
+ }
+ 
++/**
++ * poppler_document_xfa_set_dialog_funcs:
++ * @document: A #PopplerDocument made by poppler_document_render_xfa()
++ * @question_func: (scope notified) (nullable): asks questions, such as
++ *   whether to clear the form
++ * @prompt_func: (scope notified) (nullable): asks for text
++ * @user_data: data to pass to @question_func and @prompt_func
++ * @destroy_notify: (nullable): called on @user_data when the functions
++ *   are replaced or the form goes away
++ *
++ * Sets functions that let the user answer the questions of the scripts of
++ * the XFA form while they run. They must not use @document or the
++ * documents rendered from it. Without them, questions are answered as if
++ * confirmed and reported as messages, and prompts get their default
++ * answer.
++ *
++ * The functions apply to the documents rendered from @document too.
++ *
++ * Since: 26.11
++ **/
++void poppler_document_xfa_set_dialog_funcs(PopplerDocument *document, PopplerXfaQuestionFunc question_func, PopplerXfaPromptFunc prompt_func, gpointer user_data, GDestroyNotify destroy_notify)
++{
++    g_return_if_fail(POPPLER_IS_DOCUMENT(document));
++
++    if (!document->xfa) {
++        if (destroy_notify) {
++            destroy_notify(user_data);
++        }
++        return;
++    }
++    // Owns user_data for as long as either function is in use.
++    auto data = std::shared_ptr<void>(user_data, [destroy_notify](void *p) {
++        if (destroy_notify) {
++            destroy_notify(p);
++        }
++    });
++    XFAForm::HostDialogs dialogs;
++    if (question_func) {
++        dialogs.question = [question_func, data](const std::string &title, const std::string &message, int buttons) {
++            return static_cast<int>(question_func(title.c_str(), message.c_str(), static_cast<PopplerXfaButtons>(buttons), data.get()));
++        };
++    }
++    if (prompt_func) {
++        dialogs.prompt = [prompt_func, data](const std::string &title, const std::string &question, const std::string &defaultAnswer) -> std::optional<std::string> {
++            gchar *answer = prompt_func(title.c_str(), question.c_str(), defaultAnswer.c_str(), data.get());
++            if (!answer) {
++                return std::nullopt;
++            }
++            std::string res(answer);
++            g_free(answer);
++            return res;
++        };
++    }
++    document->xfa->setHostDialogs(std::move(dialogs));
++}
++
+ /**
+  * poppler_document_has_javascript:
+  * @document: A #PopplerDocument
+diff --git a/glib/poppler-document.h b/glib/poppler-document.h
+index 175e296..2e67756 100644
+--- a/glib/poppler-document.h
++++ b/glib/poppler-document.h
+@@ -459,6 +459,77 @@ POPPLER_PUBLIC
+ gboolean poppler_document_xfa_take_print_request(PopplerDocument *document, gint *first_page, gint *last_page);
+ POPPLER_PUBLIC
+ gchar *poppler_document_xfa_take_focus_request(PopplerDocument *document);
++
++/**
++ * PopplerXfaButtons:
++ * @POPPLER_XFA_BUTTONS_OK_CANCEL: OK and Cancel
++ * @POPPLER_XFA_BUTTONS_YES_NO: Yes and No
++ * @POPPLER_XFA_BUTTONS_YES_NO_CANCEL: Yes, No and Cancel
++ *
++ * The buttons of a question asked by the scripts of an XFA form.
++ *
++ * Since: 26.11
++ */
++typedef enum
++{
++    POPPLER_XFA_BUTTONS_OK_CANCEL = 1,
++    POPPLER_XFA_BUTTONS_YES_NO = 2,
++    POPPLER_XFA_BUTTONS_YES_NO_CANCEL = 3
++} PopplerXfaButtons;
++
++/**
++ * PopplerXfaAnswer:
++ * @POPPLER_XFA_ANSWER_OK: OK
++ * @POPPLER_XFA_ANSWER_CANCEL: Cancel, or the question was dismissed
++ * @POPPLER_XFA_ANSWER_NO: No
++ * @POPPLER_XFA_ANSWER_YES: Yes
++ *
++ * The answer to a question asked by the scripts of an XFA form.
++ *
++ * Since: 26.11
++ */
++typedef enum
++{
++    POPPLER_XFA_ANSWER_OK = 1,
++    POPPLER_XFA_ANSWER_CANCEL = 2,
++    POPPLER_XFA_ANSWER_NO = 3,
++    POPPLER_XFA_ANSWER_YES = 4
++} PopplerXfaAnswer;
++
++/**
++ * PopplerXfaQuestionFunc:
++ * @title: the title of the question, may be empty
++ * @message: the question
++ * @buttons: the buttons to answer with
++ * @user_data: the data passed to poppler_document_xfa_set_dialog_funcs()
++ *
++ * Asks the user a question of the scripts of an XFA form, while they wait.
++ *
++ * Returns: the answer
++ *
++ * Since: 26.11
++ */
++typedef PopplerXfaAnswer (*PopplerXfaQuestionFunc)(const gchar *title, const gchar *message, PopplerXfaButtons buttons, gpointer user_data);
++
++/**
++ * PopplerXfaPromptFunc:
++ * @title: the title of the prompt, may be empty
++ * @question: the question
++ * @default_answer: the answer to propose
++ * @user_data: the data passed to poppler_document_xfa_set_dialog_funcs()
++ *
++ * Asks the user to type an answer for the scripts of an XFA form, while
++ * they wait.
++ *
++ * Returns: (transfer full) (nullable): the answer, or %NULL if the user
++ *   cancelled
++ *
++ * Since: 26.11
++ */
++typedef gchar *(*PopplerXfaPromptFunc)(const gchar *title, const gchar *question, const gchar *default_answer, gpointer user_data);
++
++POPPLER_PUBLIC
++void poppler_document_xfa_set_dialog_funcs(PopplerDocument *document, PopplerXfaQuestionFunc question_func, PopplerXfaPromptFunc prompt_func, gpointer user_data, GDestroyNotify destroy_notify);
+ /* Javascript */
+ POPPLER_PUBLIC
+ gboolean poppler_document_has_javascript(PopplerDocument *document);
+diff --git a/glib/reference/poppler-sections.txt b/glib/reference/poppler-sections.txt
+index a7ab52a..7358d28 100644
+--- a/glib/reference/poppler-sections.txt
++++ b/glib/reference/poppler-sections.txt
+@@ -227,6 +227,11 @@ poppler_document_xfa_needs_rerender
+ poppler_document_xfa_take_messages
+ poppler_document_xfa_take_print_request
+ poppler_document_xfa_take_focus_request
++poppler_document_xfa_set_dialog_funcs
++PopplerXfaButtons
++PopplerXfaAnswer
++PopplerXfaQuestionFunc
++PopplerXfaPromptFunc
+ poppler_document_xfa_take_urls
+ poppler_font_info_free
+ poppler_font_info_new
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 42c8fe5..c0ad4c7 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -969,6 +969,86 @@ static void test_focus(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* Questions and prompts of scripts, answered by the viewer. */
++static const char *dialogs_xdp = "<?xml version=\"1.0\"?>\n"
++                                 "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                                 "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                                 "<subform name=\"form1\" layout=\"tb\">"
++                                 "<pageSet><pageArea name=\"Page1\">"
++                                 "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                                 "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/>"
++                                 "</pageArea></pageSet>"
++                                 "<field name=\"ask\" w=\"2in\" h=\"0.4in\"><ui><button/></ui><assist><toolTip>Ask</toolTip></assist>"
++                                 "<event activity=\"click\"><script contentType=\"application/x-javascript\">"
++                                 "var a = xfa.host.messageBox(\"Clear the form?\", \"Clear\", 2, 2);"
++                                 "out.rawValue = (a == 4 ? \"cleared\" : \"kept\") + \" \" + xfa.host.response(\"Which year?\", \"Year\", \"2024\");"
++                                 "</script></event></field>"
++                                 "<field name=\"out\" w=\"3in\" h=\"0.4in\" access=\"nonInteractive\"><ui><textEdit/></ui></field>"
++                                 "</subform>"
++                                 "</template>"
++                                 "</xdp:xdp>";
++
++static int dialogs_destroyed;
++
++static PopplerXfaAnswer answer_no(const gchar *title, const gchar *message, PopplerXfaButtons buttons, gpointer user_data)
++{
++    g_assert_cmpstr(title, ==, "Clear");
++    g_assert_cmpstr(message, ==, "Clear the form?");
++    g_assert_cmpint(buttons, ==, POPPLER_XFA_BUTTONS_YES_NO);
++    ++*(int *)user_data;
++    return POPPLER_XFA_ANSWER_NO;
++}
++
++static gchar *answer_year(const gchar *title, const gchar *question, const gchar *default_answer, gpointer user_data)
++{
++    g_assert_cmpstr(question, ==, "Which year?");
++    g_assert_cmpstr(default_answer, ==, "2024");
++    ++*(int *)user_data;
++    return g_strdup("2025");
++}
++
++static void count_destroy(gpointer user_data)
++{
++    ++dialogs_destroyed;
++}
++
++static void test_dialogs(void)
++{
++    GBytes *bytes = build_pdf_from(dialogs_xdp);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    int asked = 0;
++    dialogs_destroyed = 0;
++    poppler_document_xfa_set_dialog_funcs(rendered, answer_no, answer_year, &asked, count_destroy);
++    PopplerFormField *ask = field_named(rendered, "Ask");
++    g_assert_nonnull(ask);
++    poppler_form_field_button_set_state(ask, TRUE);
++    g_object_unref(ask);
++    if (asked == 0) {
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        g_assert_cmpint(asked, ==, 2);
++        PopplerDocument *rerendered = poppler_document_render_xfa(rendered, &err);
++        g_assert_no_error(err);
++        char *text = page_text(rerendered);
++        g_assert_nonnull(strstr(text, "kept 2025"));
++        g_free(text);
++        g_object_unref(rerendered);
++    }
++    /* The question was answered: nothing to report. */
++    gchar **messages = poppler_document_xfa_take_messages(rendered);
++    g_assert_true(messages == NULL || messages[0] == NULL);
++    g_strfreev(messages);
++    poppler_document_xfa_set_dialog_funcs(rendered, NULL, NULL, NULL, NULL);
++    g_assert_cmpint(dialogs_destroyed, ==, 1);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -985,5 +1065,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/pictures", test_pictures);
+     g_test_add_func("/xfa/pagination", test_pagination);
+     g_test_add_func("/xfa/focus", test_focus);
++    g_test_add_func("/xfa/dialogs", test_dialogs);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 50d0f32..9452981 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -1605,6 +1605,23 @@ void XFAForm::hostMessage(const std::string &title, const std::string &text)
+     requests.push_back({ XFAHostRequest::Type::Message, title, text });
+ }
+ 
++int XFAForm::hostQuestion(const std::string &title, const std::string &text, int buttons)
++{
++    if (buttons >= 1 && buttons <= 3 && dialogs.question) {
++        const int answer = dialogs.question(title, text, buttons);
++        if (answer >= 1 && answer <= 4) {
++            return answer;
++        }
++    }
++    hostMessage(title, text);
++    return buttons == 2 || buttons == 3 ? 4 : 1;
++}
++
++std::optional<std::string> XFAForm::hostPrompt(const std::string &title, const std::string &question, const std::string &defaultAnswer)
++{
++    return dialogs.prompt ? dialogs.prompt(title, question, defaultAnswer) : std::optional<std::string>(defaultAnswer);
++}
++
+ void XFAForm::hostLaunchURL(const std::string &url)
+ {
+     requests.push_back({ XFAHostRequest::Type::LaunchURL, {}, url });
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index 7349669..3cfc40e 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -205,8 +205,24 @@ public:
+     int pageCount();
+     std::vector<XFANode *> pageContent(int pageIndex, const std::string &cls, bool pageAreaOnly);
+ 
++    // Dialogs the viewer answers while scripts run, when it provides them:
++    // message boxes asking a question, with buttons as in Acrobat (1 OK and
++    // Cancel, 2 Yes and No, 3 Yes, No and Cancel), answered 1 OK, 2 Cancel,
++    // 3 No or 4 Yes; and prompts, answered with text or nothing for Cancel.
++    // The viewer must not use the form while answering.
++    struct HostDialogs
++    {
++        std::function<int(const std::string &title, const std::string &message, int buttons)> question;
++        std::function<std::optional<std::string>(const std::string &title, const std::string &question, const std::string &defaultAnswer)> prompt;
++    };
++    void setHostDialogs(HostDialogs d) { dialogs = std::move(d); }
++
+     // Host interface for scripts.
+     void hostMessage(const std::string &title, const std::string &text);
++    // A message box: with buttons 0, a message; else a question, answered
++    // as if confirmed when the viewer cannot ask.
++    int hostQuestion(const std::string &title, const std::string &text, int buttons);
++    std::optional<std::string> hostPrompt(const std::string &title, const std::string &question, const std::string &defaultAnswer);
+     void hostLaunchURL(const std::string &url);
+     void hostPrint(int firstPage, int lastPage);
+     void hostFocus(XFANode *field);
+@@ -262,6 +278,7 @@ private:
+     bool remergePending = false;
+     bool settingGlobal = false;
+     std::map<std::string, std::optional<std::string>> formCalcCache; // FormCalc source -> JavaScript
++    HostDialogs dialogs;
+ };
+ 
+ // Locale independent number parsing: "1.5" whatever LC_NUMERIC says.
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 485ab43..30c4517 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -421,10 +421,12 @@ var xfa = {
+         get numPages() { return N.pageCount(); },
+         currentPage: 0,
+         messageBox: function (msg, title, icon, buttons) {
+-            N.message(title === undefined ? "" : String(title), String(msg));
+-            return buttons === 2 || buttons === 3 ? 4 : 1;
++            return N.question(title === undefined || title === null ? "" : String(title), String(msg), buttons | 0);
++        },
++        response: function (q, t, def) {
++            var a = N.prompt(t === undefined || t === null ? "" : String(t), String(q), def === undefined || def === null ? "" : String(def));
++            return a === null ? "" : a;
+         },
+-        response: function (q, t, def) { return def === undefined ? "" : def; },
+         setFocus: function (x) {
+             var id = null;
+             if (typeof x === "string") {
+@@ -479,10 +481,17 @@ Object.defineProperty(xfa, "data", { get: function () { return wrap(N.dataRoot()
+ 
+ var app = {
+     viewerType: "Reader", viewerVersion: 11, viewerVariation: "Reader", platform: "UNIX", language: "ENU", runtimeHighlight: false,
+-    alert: function (msg, icon, type, title) { N.message(title === undefined ? "" : String(title), String(msg)); return type === 2 || type === 3 ? 4 : 1; },
++    // Also called with one object of named arguments.
++    alert: function (msg, icon, type, title) {
++        if (msg !== null && typeof msg === "object") { title = msg.cTitle; type = msg.nType; msg = msg.cMsg; }
++        return N.question(title === undefined || title === null ? "" : String(title), String(msg), type | 0);
++    },
+     launchURL: function (url) { N.launchURL(String(url)); },
+     beep: function () {},
+-    response: function () { return null; },
++    response: function (q, t, def) {
++        if (q !== null && typeof q === "object") { t = q.cTitle; def = q.cDefault; q = q.cQuestion; }
++        return N.prompt(t === undefined || t === null ? "" : String(t), String(q), def === undefined || def === null ? "" : String(def));
++    },
+     setTimeOut: function () { return {}; },
+     setInterval: function () { return {}; },
+     clearTimeOut: function () {},
+@@ -1384,10 +1393,16 @@ NATIVE(relayout)
+     return JS_UNDEFINED;
+ }
+ 
+-NATIVE(message)
++NATIVE(question)
+ {
+-    formOf(ctx)->hostMessage(strArg(ctx, ARG(0)), strArg(ctx, ARG(1)));
+-    return JS_UNDEFINED;
++    int32_t buttons = 0;
++    JS_ToInt32(ctx, &buttons, ARG(2));
++    return JS_NewInt32(ctx, formOf(ctx)->hostQuestion(strArg(ctx, ARG(0)), strArg(ctx, ARG(1)), buttons));
++}
++
++NATIVE(prompt)
++{
++    return optValue(ctx, formOf(ctx)->hostPrompt(strArg(ctx, ARG(0)), strArg(ctx, ARG(1)), strArg(ctx, ARG(2))));
+ }
+ 
+ NATIVE(focus)
+@@ -1594,7 +1609,6 @@ const NativeEntry natives[] = { ENTRY(alive, 1),
+                                 ENTRY(pageCount, 0),
+                                 ENTRY(pageContent, 3),
+                                 ENTRY(relayout, 0),
+-                                ENTRY(message, 2),
+                                 ENTRY(launchURL, 1),
+                                 ENTRY(print, 2),
+                                 ENTRY(language, 0),
+@@ -1622,7 +1636,9 @@ const NativeEntry natives[] = { ENTRY(alive, 1),
+                                 ENTRY(dataRoot, 0),
+                                 ENTRY(editValue, 1),
+                                 ENTRY(setFormattedValue, 2),
+-                                ENTRY(focus, 1) };
++                                ENTRY(focus, 1),
++                                ENTRY(question, 3),
++                                ENTRY(prompt, 3) };
+ 
+ int interruptHandler(JSContext *, void *opaque)
+ {
+-- 
+2.43.0
+
