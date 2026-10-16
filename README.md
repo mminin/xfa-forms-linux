@@ -148,6 +148,7 @@ Poppler (`patches/poppler/`, about 8,800 added lines):
 | 0016 | Validation scripts of immigration forms: validation messages, `oneOfChild` |
 | 0017 | Barcodes, drawn with Zint |
 | 0018 | Picture clauses for display, editing and validation; validation results |
+| 0019 | Pagination: page breaks after objects, keeping objects together, repeated table headers |
 
 Evince (`patches/evince/`, about 600 added lines):
 

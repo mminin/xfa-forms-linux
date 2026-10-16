@@ -1,0 +1,371 @@
+From 9c228b973fb02251c6512aaca86e6201a165480c Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:22:04 -0700
+Subject: [PATCH] XFA: Break pages after objects, keep objects together, repeat
+ headers
+
+The layout now follows more of the pagination of forms:
+
+- breakAfter (and break after=) starts what follows on a new page.
+- keep next and previous move an object to the next page together with
+  the one it is kept with, such as a heading with its section.
+- A split container repeats its overflow leader, such as the header row
+  of a table, at the top of each later page, and does not leave it alone
+  at the bottom of a page.
+- An overflow target sends the rest of a split container to that page
+  area. Page area targets may be SOM expressions ("Page2.#contentArea").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c |  75 ++++++++++++++++++++
+ poppler/XFALayout.cc   | 153 ++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 217 insertions(+), 11 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 3cb2657..df2f68d 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -846,6 +846,80 @@ static void test_pictures(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* Pagination: a page break after A, a title kept with the section after
++ * it, and a table repeating its header row on each page. The first page
++ * area holds 4 inches, the second, for the table's overflow, 9. */
++#define TEXT_DRAW(h, text) "<draw w=\"6in\" h=\"" h "\"><value><text>" text "</text></value></draw>"
++static const char *pagination_xdp =
++        "<?xml version=\"1.0\"?>\n"
++        "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++        "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++        "<subform name=\"form1\" layout=\"tb\">"
++        "<pageSet><pageArea name=\"P1\"><contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"4in\"/>"
++        "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/></pageArea>"
++        "<pageArea name=\"P2\"><contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++        "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
++        "<subform name=\"A\" layout=\"tb\">" TEXT_DRAW(
++                "1in", "Section A") "<breakAfter targetType=\"pageArea\"/></subform>"
++                                    "<subform name=\"B\" layout=\"tb\">" TEXT_DRAW(
++                                            "1in",
++                                            "Section B") "</subform>"
++                                                         "<subform name=\"Title\" layout=\"tb\"><keep next=\"contentArea\"/>" TEXT_DRAW(
++                                                                 "0.5in",
++                                                                 "Title of C") "</subform>"
++                                                                               "<subform name=\"C\" layout=\"tb\"><keep intact=\"contentArea\"/>" TEXT_DRAW(
++                                                                                       "2.6in",
++                                                                                       "Section C") "</subform>"
++                                                                                                    "<subform name=\"T\" layout=\"table\" columnWidths=\"2in 2in\"><overflow leader=\"HeaderRow\" target=\"P2\"/>"
++                                                                                                    "<subform name=\"HeaderRow\" layout=\"row\"><draw h=\"0.3in\"><value><text>Head</text></value></draw></subform>"
++                                                                                                    "<subform name=\"Row\" layout=\"row\"><occur min=\"30\" max=\"30\"/><draw h=\"0.3in\"><value><text>cell</text></value></draw></subform>"
++                                                                                                    "</subform>"
++                                                                                                    "</subform>"
++                                                                                                    "</template>"
++                                                                                                    "</xdp:xdp>";
++
++static int count_of(const char *text, const char *word)
++{
++    int n = 0;
++    for (const char *p = strstr(text, word); p; p = strstr(p + 1, word)) {
++        ++n;
++    }
++    return n;
++}
++
++static void test_pagination(void)
++{
++    GBytes *bytes = build_pdf_from(pagination_xdp);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    g_assert_cmpint(poppler_document_get_n_pages(rendered), ==, 4);
++    char *texts[4];
++    for (int i = 0; i < 4; ++i) {
++        PopplerPage *page = poppler_document_get_page(rendered, i);
++        texts[i] = poppler_page_get_text(page);
++        g_object_unref(page);
++    }
++    g_assert_nonnull(strstr(texts[0], "Section A"));
++    g_assert_null(strstr(texts[0], "Section B"));
++    g_assert_null(strstr(texts[1], "Title of C"));
++    g_assert_nonnull(strstr(texts[2], "Title of C"));
++    g_assert_nonnull(strstr(texts[2], "Section C"));
++    g_assert_cmpint(count_of(texts[2], "Head"), ==, 1);
++    g_assert_cmpint(count_of(texts[3], "Head"), ==, 1);
++    g_assert_cmpint(count_of(texts[2], "cell") + count_of(texts[3], "cell"), ==, 30);
++    /* The table continues on the larger page area. */
++    g_assert_cmpint(count_of(texts[3], "cell"), >, 12);
++    for (int i = 0; i < 4; ++i) {
++        g_free(texts[i]);
++    }
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -860,5 +934,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/formcalc", test_formcalc);
+     g_test_add_func("/xfa/barcode", test_barcode);
+     g_test_add_func("/xfa/pictures", test_pictures);
++    g_test_add_func("/xfa/pagination", test_pagination);
+     return g_test_run();
+ }
+diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
+index 54abf63..55a2946 100644
+--- a/poppler/XFALayout.cc
++++ b/poppler/XFALayout.cc
+@@ -157,9 +157,18 @@ struct Box
+     std::string breakTarget;
+     bool breakStartNew = false;
+     bool breakConsumed = false;
++    std::string breakAfterTarget;
++    bool breakAfterStartNew = false;
+     bool keepIntact = false;
++    bool keepNext = false; // on the same page as the next sibling
++    bool keepPrevious = false;
++    // When split: the child repeated at the top of each later part, such
++    // as the header row of a table, and the page area the rest goes to.
++    std::string overflowLeader;
++    std::string overflowTarget;
+ 
+     bool hasOwnBreak() const { return !breakTarget.empty() && !breakConsumed; }
++    bool hasBreakAfter() const { return !breakAfterTarget.empty(); }
+     bool isFlow() const { return (layout == "tb" || layout == "lr-tb") && !keepIntact && !children.empty(); }
+     bool containsBreak() const
+     {
+@@ -169,7 +178,7 @@ struct Box
+         if (layout != "tb") {
+             return false;
+         }
+-        return std::ranges::any_of(children, [](const Box &c) { return c.containsBreak(); });
++        return std::ranges::any_of(children, [](const Box &c) { return c.containsBreak() || c.hasBreakAfter(); });
+     }
+ };
+ 
+@@ -244,6 +253,8 @@ private:
+     Fit split(Box &box, double avail, bool pageHasContent, Box &head, Box &tail, PendingBreak &brk);
+     Fit splitFlow(Box &box, double avail, bool pageHasContent, Box &head, Box &tail, PendingBreak &brk);
+     Fit splitText(Box &box, double avail, Box &head, Box &tail);
++    static bool isOverflowLeader(const Box &box, const Box &child);
++    static void addOverflowLeader(const Box &box, Box &tail);
+ 
+     const XFANode *findPageArea(const std::string &target) const;
+     const XFANode *nextPageArea() const;
+@@ -297,9 +308,35 @@ Box Layouter::measure(XFANode *node, double availW, std::optional<double> forced
+             b.breakStartNew = br->getAttr("startNew", "0") == "1";
+         }
+     }
++    if (const XFANode *ba = node->firstChild("breakAfter")) {
++        const std::string type = ba->getAttr("targetType", "auto");
++        if (type == "pageArea" || type == "contentArea") {
++            b.breakAfterTarget = ba->getAttr("target", "");
++            if (b.breakAfterTarget.empty()) {
++                b.breakAfterTarget = "#next";
++            }
++            b.breakAfterStartNew = ba->getAttr("startNew", "0") == "1";
++        }
++    } else if (const XFANode *br = node->firstChild("break")) {
++        const std::string after = br->getAttr("after", "auto");
++        if (after == "pageArea" || after == "contentArea" || after == "pageEven" || after == "pageOdd") {
++            b.breakAfterTarget = br->getAttr("afterTarget", "");
++            if (b.breakAfterTarget.empty()) {
++                b.breakAfterTarget = "#next";
++            }
++            b.breakAfterStartNew = br->getAttr("startNew", "0") == "1";
++        }
++    }
+     if (const XFANode *keep = node->firstChild("keep")) {
+         const std::string intact = keep->getAttr("intact", "none");
+         b.keepIntact = intact == "contentArea" || intact == "pageArea";
++        const std::string next = keep->getAttr("next", "none"), previous = keep->getAttr("previous", "none");
++        b.keepNext = next == "contentArea" || next == "pageArea";
++        b.keepPrevious = previous == "contentArea" || previous == "pageArea";
++    }
++    if (const XFANode *overflow = node->firstChild("overflow")) {
++        b.overflowLeader = overflow->getAttr("leader", "");
++        b.overflowTarget = overflow->getAttr("target", "");
+     }
+     return b;
+ }
+@@ -590,7 +627,54 @@ Fit Layouter::split(Box &box, double avail, bool pageHasContent, Box &head, Box
+     if (box.h <= avail + eps && !box.containsBreak()) {
+         return Fit::All;
+     }
+-    return splitFlow(box, avail, pageHasContent, head, tail, brk);
++    const Fit f = splitFlow(box, avail, pageHasContent, head, tail, brk);
++    if (f == Fit::Some) {
++        // A header row alone at the bottom of a page moves with the rest.
++        if (pageHasContent && !head.children.empty() && std::ranges::all_of(head.children, [&](const Box &c) { return isOverflowLeader(box, c); })) {
++            return Fit::None;
++        }
++        addOverflowLeader(box, tail);
++        if (!box.overflowTarget.empty() && !brk.set) {
++            brk.set = true;
++            brk.target = box.overflowTarget;
++            brk.startNew = false;
++        }
++    }
++    return f;
++}
++
++// Whether child is the overflow leader of box, named by its overflow
++// element as "HeaderRow", "#id" or a SOM expression ending with the name.
++bool Layouter::isOverflowLeader(const Box &box, const Box &child)
++{
++    std::string name = box.overflowLeader;
++    if (const size_t dot = name.rfind('.'); dot != std::string::npos) {
++        name.erase(0, dot + 1);
++    }
++    if (const size_t bracket = name.find('['); bracket != std::string::npos) {
++        name.resize(bracket);
++    }
++    if (name.starts_with("#")) {
++        return child.node->getAttr("id", "") == name.substr(1);
++    }
++    return !name.empty() && child.node->getName() == name;
++}
++
++// The overflow leader of a split box, such as the header row of a table,
++// goes again at the top of the rest.
++void Layouter::addOverflowLeader(const Box &box, Box &tail)
++{
++    const auto leader = std::ranges::find_if(box.children, [&box](const Box &c) { return isOverflowLeader(box, c); });
++    if (leader == box.children.end() || (!tail.children.empty() && tail.children.front().node == leader->node)) {
++        return;
++    }
++    Box copy = *leader;
++    copy.y = 0;
++    for (Box &c : tail.children) {
++        c.y += copy.h;
++    }
++    tail.h += copy.h;
++    tail.children.insert(tail.children.begin(), std::move(copy));
+ }
+ 
+ Fit Layouter::splitText(Box &box, double avail, Box &head, Box &tail)
+@@ -659,11 +743,7 @@ Fit Layouter::splitFlow(Box &box, double avail, bool pageHasContent, Box &head,
+ {
+     if (box.layout == "lr-tb") {
+         Box flow = rowsAsFlow(box);
+-        const Fit f = splitFlow(flow, avail, pageHasContent, head, tail, brk);
+-        if (f == Fit::All) {
+-            return Fit::All;
+-        }
+-        return f;
++        return splitFlow(flow, avail, pageHasContent, head, tail, brk);
+     }
+     double used = box.hasStart ? box.margin.top : 0;
+     std::vector<Box> placed;
+@@ -690,6 +770,15 @@ Fit Layouter::splitFlow(Box &box, double avail, bool pageHasContent, Box &head,
+             p.y = used;
+             used += c.h;
+             placed.push_back(std::move(p));
++            if (c.hasBreakAfter()) {
++                // What follows starts on a new page.
++                brk.set = true;
++                brk.target = c.breakAfterTarget;
++                brk.startNew = c.breakAfterStartNew;
++                ++i;
++                stopped = true;
++                break;
++            }
+             continue;
+         }
+         Box ch, ct;
+@@ -699,6 +788,11 @@ Fit Layouter::splitFlow(Box &box, double avail, bool pageHasContent, Box &head,
+             p.y = used;
+             used += c.h;
+             placed.push_back(std::move(p));
++            if (!brk.set && c.hasBreakAfter()) {
++                brk.set = true;
++                brk.target = c.breakAfterTarget;
++                brk.startNew = c.breakAfterStartNew;
++            }
+             if (brk.set) {
+                 ++i;
+                 stopped = true;
+@@ -723,6 +817,17 @@ Fit Layouter::splitFlow(Box &box, double avail, bool pageHasContent, Box &head,
+             placed.push_back(std::move(p));
+             continue;
+         }
++        // Objects kept with this one move along to the next page, unless
++        // that would leave this page empty for nothing.
++        size_t kept = 0;
++        while (kept < placed.size() && (placed[placed.size() - 1 - kept].keepNext || box.children[i - kept].keepPrevious)) {
++            ++kept;
++        }
++        if (kept && (pageHasContent || kept < placed.size())) {
++            placed.resize(placed.size() - kept);
++            i -= kept;
++            used = placed.empty() ? (box.hasStart ? box.margin.top : 0) : placed.back().y + placed.back().h;
++        }
+         stopped = true;
+         break;
+     }
+@@ -761,11 +866,20 @@ const XFANode *Layouter::findPageArea(const std::string &target) const
+     if (target.empty() || target == "#next") {
+         return nullptr;
+     }
+-    const std::string t = target.starts_with("#") ? target.substr(1) : target;
+-    for (const XFANode *a : pageAreas) {
+-        if (a->getName() == t || a->getAttr("id", "") == t) {
+-            return a;
++    // A name or id, or a SOM expression such as "Page2.#contentArea".
++    size_t start = 0;
++    while (start <= target.size()) {
++        const size_t dot = std::min(target.find('.', start), target.size());
++        std::string t = target.substr(start, dot - start);
++        if (t.starts_with("#")) {
++            t.erase(0, 1);
++        }
++        for (const XFANode *a : pageAreas) {
++            if (a->getName() == t || a->getAttr("id", "") == t) {
++                return a;
++            }
+         }
++        start = dot + 1;
+     }
+     return nullptr;
+ }
+@@ -932,8 +1046,13 @@ XFALayoutResult Layouter::run()
+     }
+ 
+     int guard = 0;
++    std::optional<PendingBreak> breakAfter;
+     while (!queue.empty() && ++guard < 10000) {
+         Box &item = queue.front();
++        if (breakAfter) {
++            newPage(findPageArea(breakAfter->target));
++            breakAfter.reset();
++        }
+         if (item.hasOwnBreak()) {
+             item.breakConsumed = true;
+             const XFANode *target = findPageArea(item.breakTarget);
+@@ -960,9 +1079,21 @@ XFALayoutResult Layouter::run()
+         Box head, tail;
+         PendingBreak brk;
+         const Fit f = split(item, avail, page->used > eps, head, tail, brk);
++        if (f == Fit::All && item.keepNext && queue.size() > 1 && page->used > eps) {
++            // Kept with the next object, which would not start on this page.
++            Box next = queue[1], nh, nt;
++            PendingBreak nb;
++            if (split(next, avail - item.h, true, nh, nt, nb) == Fit::None) {
++                newPage(nullptr);
++                continue;
++            }
++        }
+         if (f == Fit::All) {
+             place(item, page->contentX + item.x, page->contentY + page->used, lp, page->index);
+             page->used += item.h;
++            if (brk.set || item.hasBreakAfter()) {
++                breakAfter = brk.set ? brk : PendingBreak { true, item.breakAfterTarget, item.breakAfterStartNew };
++            }
+             queue.pop_front();
+             continue;
+         }
+-- 
+2.43.0
+
