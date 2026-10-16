@@ -137,6 +137,7 @@ Poppler (`patches/poppler/`, about 8,800 added lines):
 | 0009 | Save filled forms with their scripts and state, and reopen them |
 | 0010 | Decode PNG, BMP and TIFF images, with transparency |
 | 0011 | Lay out tables in columns |
+| 0012 | Draw the values of read-only and image fields |
 
 Evince (`patches/evince/`, about 600 added lines):
 

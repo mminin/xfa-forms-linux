@@ -1,0 +1,150 @@
+From 4eb4db77f239c46d31760ceeb3ff37d373754411 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 15:33:19 -0700
+Subject: [PATCH] XFA: Draw the values of fields that have no widget
+
+Fields that get no AcroForm widget showed nothing: those with
+access="nonInteractive", such as calculated totals, and image fields.
+Their values are now drawn as page content: text and list values as
+text, images of image fields, and the check mark of check buttons.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c | 37 +++++++++++++++++++++++++++++
+ poppler/XFAWriter.cc   | 53 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 90 insertions(+)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 3cbb5bf..f6cb2a4 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -502,6 +502,42 @@ static void test_table(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* Fields without widgets show their values on the page. */
++static const char *static_values_xdp = "<?xml version=\"1.0\"?>\n"
++                                       "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                                       "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                                       "<subform name=\"form1\" layout=\"tb\">"
++                                       "<pageSet><pageArea name=\"Page1\">"
++                                       "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                                       "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/>"
++                                       "</pageArea></pageSet>"
++                                       "<field name=\"total\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><numericEdit/></ui>"
++                                       "<value><decimal>1234.5</decimal></value></field>"
++                                       "<field name=\"country\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><choiceList/></ui>"
++                                       "<items><text>Canada</text><text>France</text></items>"
++                                       "<items save=\"1\" presence=\"hidden\"><text>CA</text><text>FR</text></items>"
++                                       "<value><text>FR</text></value></field>"
++                                       "</subform>"
++                                       "</template>"
++                                       "</xdp:xdp>";
++
++static void test_static_values(void)
++{
++    GBytes *bytes = build_pdf_from(static_values_xdp);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    char *text = page_text(rendered);
++    g_assert_nonnull(strstr(text, "1234.5"));
++    g_assert_nonnull(strstr(text, "France"));
++    g_free(text);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -510,5 +546,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/saved-scripts", test_saved_scripts);
+     g_test_add_func("/xfa/images", test_images);
+     g_test_add_func("/xfa/table", test_table);
++    g_test_add_func("/xfa/static-values", test_static_values);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index aa0e39c..a3032fb 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -291,6 +291,7 @@ private:
+     void drawDraw(const XFALayoutItem &item);
+     void drawField(const XFALayoutItem &item);
+     void drawCaption(XFANode *field, const XFAFieldGeometry &g, double x, double y);
++    void drawFieldValue(XFANode *field, const XFAFieldGeometry &g, double x, double y);
+     void addWidget(XFANode *field, const XFAFieldGeometry &g, double x, double y, double w, double h);
+     std::string da(const XFAFont &font) const;
+     int circleAppearance(double size, bool filled);
+@@ -740,12 +741,64 @@ void Writer::drawField(const XFALayoutItem &item)
+     }
+     if (ui == "button") {
+         drawCaption(field, g, item.x, item.y);
++    } else if (!interactive(field)) {
++        drawFieldValue(field, g, item.x, item.y);
+     }
+     if (!forPrint || ui != "button") {
+         addWidget(field, g, item.x, item.y, item.w, item.h);
+     }
+ }
+ 
++// Fields without a widget show their value as page content.
++void Writer::drawFieldValue(XFANode *field, const XFAFieldGeometry &g, double x, double y)
++{
++    if (blankValues) {
++        return;
++    }
++    const std::string ui = form->uiClass(field);
++    const double ux = x + g.uiX, uy = y + g.uiY;
++    if (ui == "imageEdit") {
++        const XFANode *value = field->firstChild("value");
++        const XFANode *image = value ? value->firstChild("image") : nullptr;
++        if (image && !image->textContent().empty()) {
++            drawImage(image, ux, uy, g.uiW, g.uiH);
++        }
++        return;
++    }
++    if (ui == "signature" || ui == "barcode") {
++        return;
++    }
++    const std::optional<std::string> raw = form->getRawValue(field);
++    if (ui == "checkButton") {
++        const std::vector<std::string> items = form->getItems(field, true);
++        if (!raw || *raw != (items.empty() ? "1" : items[0])) {
++            return;
++        }
++        const XFANode *widget = field->firstChild("ui")->firstChild("checkButton");
++        const double size = std::min({ g.uiW, g.uiH, XFAMeasureAttr(widget, "size", 10) });
++        const double bx = ux + 1, by = uy + (g.uiH - size) / 2;
++        if (widget->getAttr("shape", "square") == "round") {
++            const double r = size * 0.28, cx = bx + size / 2, cy = py(by + size / 2), k = 0.5523 * r;
++            page->ops += "q 0 g\n" + num(cx + r) + " " + num(cy) + " m " + num(cx + r) + " " + num(cy + k) + " " + num(cx + k) + " " + num(cy + r) + " " + num(cx) + " " + num(cy + r) + " c " + num(cx - k) + " " + num(cy + r) + " "
++                    + num(cx - r) + " " + num(cy + k) + " " + num(cx - r) + " " + num(cy) + " c " + num(cx - r) + " " + num(cy - k) + " " + num(cx - k) + " " + num(cy - r) + " " + num(cx) + " " + num(cy - r) + " c " + num(cx + k) + " "
++                    + num(cy - r) + " " + num(cx + r) + " " + num(cy - k) + " " + num(cx + r) + " " + num(cy) + " c f Q\n";
++        } else {
++            // A check mark from ZapfDingbats.
++            const double fs = size * 0.8;
++            page->ops += "BT\n/F13 " + num(fs) + " Tf\n100 Tz\n0 Tc\n0 g\n1 0 0 1 " + num(bx + size * 0.15) + " " + num(py(by + size * 0.8)) + " Tm\n(4) Tj\nET\n";
++        }
++        return;
++    }
++    const std::string text = form->getFormattedValue(field);
++    if (text.empty()) {
++        return;
++    }
++    // Inset like the appearance viewers give text fields.
++    const XFAFont font = XFAFontOf(field);
++    const XFAPara para = XFAParaOf(field);
++    drawText(XFAParagraphsOfText(text, font, para), para, ux + 2, uy + 1, std::max(0.0, g.uiW - 4), std::max(0.0, g.uiH - 2), nullptr);
++}
++
+ void Writer::drawItem(const XFALayoutItem &item)
+ {
+     if (!drawable(item.node)) {
+-- 
+2.43.0
+
