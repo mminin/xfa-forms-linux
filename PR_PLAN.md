@@ -37,8 +37,8 @@ fixed headless test paths and metadata placement, implemented the desktop launch
 installer (`scripts/install-desktop.py`), performed GUI and save/reopen checks,
 and drafted the original publication plan. The follow-up added the synthetic
 Evince dialog test (`tools/headless/check-dialogs.c`, `scripts/test-dialogs.sh`)
-and refreshed the 129-form corpus results and remaining-gap notes. Shared build scripts, the initial GUI
-harness and the initial consent-letter scenario predate that handoff; later
+and refreshed the 129-form corpus results and remaining-gap notes. Shared build
+scripts, the initial GUI harness and the initial consent-letter scenario predate that handoff; later
 packaging edits may include further Claude changes.
 
 Mozilla's pdf.js XFA implementation was consulted as a reference for the initial
@@ -76,3 +76,33 @@ For an individual merge request, narrow this wording to its actual patches.
 6. Before publication, run the package's build and tests afresh, record failures
    and compatibility limits, and use synthetic data in public reproductions.
    Carry the relevant attribution into each submission and the release notes.
+
+## Follow-up verification (2026-10-16)
+
+- Rebuilt and installed the patched Poppler and Evince in the local development
+  prefix. The system packages are unchanged.
+- Passed all four form-detection tests and all 14 synthetic XFA tests, including
+  save/reopen, scripting, dialog cancellation, a six-second answer delay and
+  replacing callbacks while one is running.
+- Passed the synthetic Evince dialog integration test on a private Wayland
+  display: all question button sets, prompt defaults and editing, cancellation,
+  four successive re-renders and closing the parent window while a script waits.
+- Generated the consent letter with synthetic answers in screen and print modes;
+  both outputs contained the expected child's name.
+- Rendered all 129 corpus forms without a failed render. 119 logged no script
+  errors; 10 logged 26 error occurrences. See [corpus/README.md](corpus/README.md)
+  for the remaining script and image failures and the limits of this check.
+- Applied all 23 Poppler patches and 10 Evince patches to fresh checkouts of the
+  pinned bases and compared their resulting trees with the tested sources.
+- Passed all 14 XFA tests under AddressSanitizer and UndefinedBehaviorSanitizer,
+  including leak checking after explicit test-process graphics cleanup
+  (`cairo_debug_reset_static_data()` and `FcFini()`). Without that cleanup,
+  Fontconfig retained 320 bytes at process exit. The sanitizer build used
+  `-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer
+  -fno-sanitize-recover=undefined`; vptr checks were disabled for Poppler's
+  hidden/no-RTTI types. These checks covered Poppler; the GUI integration test
+  used the normal Evince build.
+
+The feature work is available for review. Full compatibility with the remaining
+forms, startup-script dialogs and the broader gaps in the README remain future
+work; this verification does not establish submission-ready output for every form.
