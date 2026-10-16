@@ -1,0 +1,468 @@
+From 4b470ed36d5373f40a92332890bf9330a2317126 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:47:10 -0700
+Subject: [PATCH] libview: Let users answer XFA script questions and prompts
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ backend/pdf/ev-poppler.c        |  63 ++++++++++
+ backend/pdf/meson.build         |   4 +
+ libdocument/ev-document-forms.c |  30 +++++
+ libdocument/ev-document-forms.h |  35 ++++++
+ libview/ev-view-private.h       |   1 +
+ libview/ev-view.c               | 200 +++++++++++++++++++++++++++++++-
+ 6 files changed, 331 insertions(+), 2 deletions(-)
+
+diff --git a/backend/pdf/ev-poppler.c b/backend/pdf/ev-poppler.c
+index c21086f..5cdc389 100644
+--- a/backend/pdf/ev-poppler.c
++++ b/backend/pdf/ev-poppler.c
+@@ -2646,6 +2646,68 @@ pdf_document_forms_take_focus_request (EvDocumentForms *document)
+ #endif
+ }
+ 
++#ifdef HAVE_POPPLER_XFA_DIALOGS
++typedef struct {
++	EvFormQuestionFunc question;
++	EvFormPromptFunc prompt;
++	gpointer user_data;
++	GDestroyNotify destroy_notify;
++} PdfFormDialogs;
++
++static void
++pdf_form_dialogs_free (gpointer user_data)
++{
++	PdfFormDialogs *dialogs = user_data;
++
++	if (dialogs->destroy_notify)
++		dialogs->destroy_notify (dialogs->user_data);
++	g_free (dialogs);
++}
++
++static PopplerXfaAnswer
++pdf_form_question (const gchar *title, const gchar *message,
++		   PopplerXfaButtons buttons, gpointer user_data)
++{
++	PdfFormDialogs *dialogs = user_data;
++
++	return (PopplerXfaAnswer) dialogs->question (title, message,
++						   (EvFormQuestionButtons) buttons,
++						   dialogs->user_data);
++}
++
++static gchar *
++pdf_form_prompt (const gchar *title, const gchar *question,
++		 const gchar *default_answer, gpointer user_data)
++{
++	PdfFormDialogs *dialogs = user_data;
++
++	return dialogs->prompt (title, question, default_answer, dialogs->user_data);
++}
++#endif
++
++static void
++pdf_document_forms_set_dialog_funcs (EvDocumentForms   *document,
++				    EvFormQuestionFunc question_func,
++				    EvFormPromptFunc   prompt_func,
++				    gpointer           user_data,
++				    GDestroyNotify     destroy_notify)
++{
++#ifdef HAVE_POPPLER_XFA_DIALOGS
++	PdfFormDialogs *dialogs = g_new0 (PdfFormDialogs, 1);
++
++	dialogs->question = question_func;
++	dialogs->prompt = prompt_func;
++	dialogs->user_data = user_data;
++	dialogs->destroy_notify = destroy_notify;
++	poppler_document_xfa_set_dialog_funcs (PDF_DOCUMENT (document)->document,
++		question_func ? pdf_form_question : NULL,
++		prompt_func ? pdf_form_prompt : NULL, dialogs, pdf_form_dialogs_free);
++#else
++	if (destroy_notify)
++		destroy_notify (user_data);
++#endif
++}
++
+ static void
+ pdf_document_document_forms_iface_init (EvDocumentFormsInterface *iface)
+ {
+@@ -2669,6 +2731,7 @@ pdf_document_document_forms_iface_init (EvDocumentFormsInterface *iface)
+ 	iface->take_urls = pdf_document_forms_take_urls;
+ 	iface->take_print_request = pdf_document_forms_take_print_request;
+ 	iface->take_focus_request = pdf_document_forms_take_focus_request;
++	iface->set_dialog_funcs = pdf_document_forms_set_dialog_funcs;
+ }
+ 
+ /* Annotations */
+diff --git a/backend/pdf/meson.build b/backend/pdf/meson.build
+index 0d22470..8ca1b3b 100644
+--- a/backend/pdf/meson.build
++++ b/backend/pdf/meson.build
+@@ -10,3 +10,7 @@ backend_sources = files('ev-poppler.c')
+ if cc.has_function('poppler_document_render_xfa', dependencies: poppler_glib_dep)
+   backend_cflags += '-DHAVE_POPPLER_XFA'
+ endif
++
++if cc.has_function('poppler_document_xfa_set_dialog_funcs', dependencies: poppler_glib_dep)
++  backend_cflags += '-DHAVE_POPPLER_XFA_DIALOGS'
++endif
+diff --git a/libdocument/ev-document-forms.c b/libdocument/ev-document-forms.c
+index 650e04a..59694a7 100644
+--- a/libdocument/ev-document-forms.c
++++ b/libdocument/ev-document-forms.c
+@@ -292,3 +292,33 @@ ev_document_forms_take_focus_request (EvDocumentForms *document_forms)
+ 
+ 	return iface->take_focus_request ? iface->take_focus_request (document_forms) : NULL;
+ }
++
++/**
++ * ev_document_forms_set_dialog_funcs:
++ * @document_forms: an #EvDocumentForms
++ * @question_func: (nullable): asks the user a question while a script waits
++ * @prompt_func: (nullable): asks for text, returning newly allocated text or
++ *   %NULL on cancellation
++ * @user_data: data passed to the functions
++ * @destroy_notify: (nullable): releases @user_data when replaced or unused
++ *
++ * Installs synchronous dialog handlers. They must not access the form while
++ * answering. Set both functions to %NULL to remove the handlers.
++ *
++ * Since: 49.0
++ */
++void
++ev_document_forms_set_dialog_funcs (EvDocumentForms   *document_forms,
++				  EvFormQuestionFunc question_func,
++				  EvFormPromptFunc   prompt_func,
++				  gpointer           user_data,
++				  GDestroyNotify     destroy_notify)
++{
++	EvDocumentFormsInterface *iface = EV_DOCUMENT_FORMS_GET_IFACE (document_forms);
++
++	if (iface->set_dialog_funcs)
++		iface->set_dialog_funcs (document_forms, question_func, prompt_func,
++					user_data, destroy_notify);
++	else if (destroy_notify)
++		destroy_notify (user_data);
++}
+diff --git a/libdocument/ev-document-forms.h b/libdocument/ev-document-forms.h
+index ba2bf96..55fbdc1 100644
+--- a/libdocument/ev-document-forms.h
++++ b/libdocument/ev-document-forms.h
+@@ -38,6 +38,29 @@ G_BEGIN_DECLS
+ EV_PUBLIC
+ G_DECLARE_INTERFACE (EvDocumentForms, ev_document_forms, EV, DOCUMENT_FORMS, GObject)
+ 
++/* XFA/Acrobat button and answer codes. */
++typedef enum {
++	EV_FORM_BUTTONS_OK_CANCEL = 1,
++	EV_FORM_BUTTONS_YES_NO = 2,
++	EV_FORM_BUTTONS_YES_NO_CANCEL = 3
++} EvFormQuestionButtons;
++
++typedef enum {
++	EV_FORM_ANSWER_OK = 1,
++	EV_FORM_ANSWER_CANCEL = 2,
++	EV_FORM_ANSWER_NO = 3,
++	EV_FORM_ANSWER_YES = 4
++} EvFormAnswer;
++
++typedef EvFormAnswer (*EvFormQuestionFunc) (const gchar *title,
++					  const gchar *message,
++					  EvFormQuestionButtons buttons,
++					  gpointer user_data);
++typedef gchar *(*EvFormPromptFunc) (const gchar *title,
++				   const gchar *question,
++				   const gchar *default_answer,
++				   gpointer user_data);
++
+ struct _EvDocumentFormsInterface
+ {
+ 	GTypeInterface base_iface;
+@@ -86,6 +109,11 @@ struct _EvDocumentFormsInterface
+ 							       gint              *first_page,
+ 							       gint              *last_page);
+ 	gchar         *(* take_focus_request)                 (EvDocumentForms   *document_forms);
++	void           (* set_dialog_funcs)                   (EvDocumentForms   *document_forms,
++							       EvFormQuestionFunc question_func,
++							       EvFormPromptFunc   prompt_func,
++							       gpointer           user_data,
++							       GDestroyNotify     destroy_notify);
+ };
+ 
+ EV_PUBLIC
+@@ -156,4 +184,11 @@ gboolean       ev_document_forms_take_print_request                 (EvDocumentF
+ EV_PUBLIC
+ gchar         *ev_document_forms_take_focus_request                 (EvDocumentForms   *document_forms);
+ 
++EV_PUBLIC
++void ev_document_forms_set_dialog_funcs (EvDocumentForms   *document_forms,
++					EvFormQuestionFunc question_func,
++					EvFormPromptFunc   prompt_func,
++					gpointer           user_data,
++					GDestroyNotify     destroy_notify);
++
+ G_END_DECLS
+diff --git a/libview/ev-view-private.h b/libview/ev-view-private.h
+index 31fa8ea..0937cbe 100644
+--- a/libview/ev-view-private.h
++++ b/libview/ev-view-private.h
+@@ -236,6 +236,7 @@ typedef struct _EvViewPrivate {
+ 
+ 	/* Forms whose scripts change the document, such as XFA forms */
+ 	guint form_changes_idle_id;
++	gboolean form_dialog_running;
+ 	/* The field to edit again once the changed document is loaded */
+ 	gchar *refocus_field_name;
+ 
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 85a9b92..5e3051c 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2628,6 +2628,11 @@ ev_view_apply_form_changes (EvView *view)
+ 
+ 	priv->form_changes_idle_id = 0;
+ 
++	/* A modal script dialog runs a nested loop. The script must finish
++	 * before the form is accessed or its document is replaced. */
++	if (priv->form_dialog_running)
++		return;
++
+ 	if (!priv->document || !EV_IS_DOCUMENT_FORMS (priv->document))
+ 		return;
+ 
+@@ -2703,6 +2708,192 @@ ev_view_form_changed (EvView *view)
+ 		priv->form_changes_idle_id = g_idle_add_once ((GSourceOnceFunc) ev_view_apply_form_changes, view);
+ }
+ 
++typedef struct {
++	GWeakRef view;
++	GWeakRef document;
++	GThread *thread;
++} EvViewFormDialogs;
++
++typedef struct {
++	GMainLoop *loop;
++	gint answer;
++	gboolean done;
++} EvViewFormDialog;
++
++static void
++ev_view_form_dialogs_free (gpointer user_data)
++{
++	EvViewFormDialogs *dialogs = user_data;
++
++	g_weak_ref_clear (&dialogs->view);
++	g_weak_ref_clear (&dialogs->document);
++	g_free (dialogs);
++}
++
++static void
++ev_view_form_dialog_response (GtkDialog *dialog, gint response, EvViewFormDialog *state)
++{
++	if (state->done)
++		return;
++	state->done = TRUE;
++	state->answer = response > 0 ? response : EV_FORM_ANSWER_CANCEL;
++	g_main_loop_quit (state->loop);
++}
++
++static void
++ev_view_form_dialog_unrealize (GtkWidget *widget, EvViewFormDialog *state)
++{
++	ev_view_form_dialog_response (NULL, EV_FORM_ANSWER_CANCEL, state);
++}
++
++static void
++ev_view_form_dialog_document_changed (EvDocumentModel *model, GParamSpec *pspec,
++				      EvViewFormDialog *state)
++{
++	ev_view_form_dialog_response (NULL, EV_FORM_ANSWER_CANCEL, state);
++}
++
++/* Scripts need their answer synchronously. Keep their document alive and
++ * prevent recursive form edits while GTK dispatches the modal dialog. */
++static gint
++ev_view_run_form_dialog (EvView      *view,
++			 const gchar *title,
++			 const gchar *message,
++			 EvFormQuestionButtons buttons,
++			 const gchar *default_answer,
++			 gchar      **text)
++{
++	EvViewPrivate *priv = GET_PRIVATE (view);
++	GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
++	GtkWidget *dialog, *content, *label, *entry = NULL;
++	EvViewFormDialog state = { NULL, EV_FORM_ANSWER_CANCEL, FALSE };
++	g_autoptr (EvDocumentModel) model = NULL;
++
++	if (priv->form_dialog_running || !GTK_IS_WINDOW (root) || !priv->model)
++		return EV_FORM_ANSWER_CANCEL;
++
++	model = g_object_ref (priv->model);
++	state.loop = g_main_loop_new (NULL, FALSE);
++	dialog = gtk_dialog_new ();
++	g_object_ref_sink (dialog);
++	gtk_window_set_title (GTK_WINDOW (dialog), *title ? title : _("Document Form"));
++	gtk_window_set_transient_for (GTK_WINDOW (dialog), GTK_WINDOW (root));
++	gtk_window_set_modal (GTK_WINDOW (dialog), TRUE);
++	gtk_window_set_destroy_with_parent (GTK_WINDOW (dialog), TRUE);
++	gtk_window_set_default_size (GTK_WINDOW (dialog), 420, -1);
++	content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
++	gtk_box_set_spacing (GTK_BOX (content), 12);
++	gtk_widget_set_margin_start (content, 18);
++	gtk_widget_set_margin_end (content, 18);
++	gtk_widget_set_margin_top (content, 18);
++	gtk_widget_set_margin_bottom (content, 18);
++	label = gtk_label_new (message);
++	gtk_label_set_wrap (GTK_LABEL (label), TRUE);
++	gtk_label_set_max_width_chars (GTK_LABEL (label), 65);
++	gtk_label_set_xalign (GTK_LABEL (label), 0);
++	gtk_box_append (GTK_BOX (content), label);
++
++	if (text) {
++		entry = gtk_entry_new ();
++		gtk_editable_set_text (GTK_EDITABLE (entry), default_answer);
++		gtk_entry_set_activates_default (GTK_ENTRY (entry), TRUE);
++		gtk_box_append (GTK_BOX (content), entry);
++	}
++
++	if (text || buttons == EV_FORM_BUTTONS_OK_CANCEL) {
++		gtk_dialog_add_buttons (GTK_DIALOG (dialog),
++			_("_Cancel"), EV_FORM_ANSWER_CANCEL, _("_OK"), EV_FORM_ANSWER_OK, NULL);
++	} else {
++		if (buttons == EV_FORM_BUTTONS_YES_NO_CANCEL)
++			gtk_dialog_add_button (GTK_DIALOG (dialog), _("_Cancel"), EV_FORM_ANSWER_CANCEL);
++		gtk_dialog_add_buttons (GTK_DIALOG (dialog),
++			_("_No"), EV_FORM_ANSWER_NO, _("_Yes"), EV_FORM_ANSWER_YES, NULL);
++	}
++	gtk_dialog_set_default_response (GTK_DIALOG (dialog),
++		text ? EV_FORM_ANSWER_OK : buttons == EV_FORM_BUTTONS_YES_NO ?
++		EV_FORM_ANSWER_NO : EV_FORM_ANSWER_CANCEL);
++	g_signal_connect (dialog, "response", G_CALLBACK (ev_view_form_dialog_response), &state);
++	g_signal_connect (dialog, "unrealize", G_CALLBACK (ev_view_form_dialog_unrealize), &state);
++	g_signal_connect (view, "unrealize", G_CALLBACK (ev_view_form_dialog_unrealize), &state);
++	g_signal_connect (model, "notify::document",
++			  G_CALLBACK (ev_view_form_dialog_document_changed), &state);
++	priv->form_dialog_running = TRUE;
++	gtk_window_present (GTK_WINDOW (dialog));
++	if (entry) {
++		gtk_widget_grab_focus (entry);
++		gtk_editable_select_region (GTK_EDITABLE (entry), 0, -1);
++	}
++	if (!state.done)
++		g_main_loop_run (state.loop);
++	if (text && state.answer == EV_FORM_ANSWER_OK)
++		*text = g_strdup (gtk_editable_get_text (GTK_EDITABLE (entry)));
++	g_signal_handlers_disconnect_by_data (model, &state);
++	g_signal_handlers_disconnect_by_data (view, &state);
++	g_signal_handlers_disconnect_by_data (dialog, &state);
++	gtk_window_destroy (GTK_WINDOW (dialog));
++	g_object_unref (dialog);
++	g_main_loop_unref (state.loop);
++	priv->form_dialog_running = FALSE;
++	ev_view_form_changed (view);
++
++	return state.answer;
++}
++
++static EvFormAnswer
++ev_view_form_question (const gchar *title, const gchar *message,
++		       EvFormQuestionButtons buttons, gpointer user_data)
++{
++	EvViewFormDialogs *dialogs = user_data;
++	g_autoptr (EvView) view = NULL;
++	g_autoptr (EvDocument) document = NULL;
++
++	/* Background rendering must never enter GTK or wait for the UI. */
++	if (g_thread_self () != dialogs->thread)
++		return EV_FORM_ANSWER_CANCEL;
++	view = g_weak_ref_get (&dialogs->view);
++	document = g_weak_ref_get (&dialogs->document);
++	EvViewPrivate *priv = view ? GET_PRIVATE (view) : NULL;
++	return priv && document && priv->document == document ?
++		ev_view_run_form_dialog (view, title, message, buttons, NULL, NULL) :
++		EV_FORM_ANSWER_CANCEL;
++}
++
++static gchar *
++ev_view_form_prompt (const gchar *title, const gchar *question,
++		     const gchar *default_answer, gpointer user_data)
++{
++	EvViewFormDialogs *dialogs = user_data;
++	g_autoptr (EvView) view = NULL;
++	g_autoptr (EvDocument) document = NULL;
++	gchar *text = NULL;
++
++	if (g_thread_self () != dialogs->thread)
++		return NULL;
++	view = g_weak_ref_get (&dialogs->view);
++	document = g_weak_ref_get (&dialogs->document);
++	EvViewPrivate *priv = view ? GET_PRIVATE (view) : NULL;
++	if (priv && document && priv->document == document)
++		ev_view_run_form_dialog (view, title, question, EV_FORM_BUTTONS_OK_CANCEL,
++					default_answer, &text);
++	return text;
++}
++
++static void
++ev_view_install_form_dialogs (EvView *view)
++{
++	EvViewPrivate *priv = GET_PRIVATE (view);
++	EvViewFormDialogs *dialogs;
++
++	if (!EV_IS_DOCUMENT_FORMS (priv->document))
++		return;
++	dialogs = g_new0 (EvViewFormDialogs, 1);
++	g_weak_ref_init (&dialogs->view, view);
++	g_weak_ref_init (&dialogs->document, priv->document);
++	dialogs->thread = g_thread_self ();
++	ev_document_forms_set_dialog_funcs (EV_DOCUMENT_FORMS (priv->document),
++		ev_view_form_question, ev_view_form_prompt, dialogs, ev_view_form_dialogs_free);
++}
++
+ static void
+ ev_view_form_field_button_toggle (EvView      *view,
+ 				  EvFormField *field)
+@@ -2714,6 +2905,9 @@ ev_view_form_field_button_toggle (EvView      *view,
+ 	GList             *l;
+ 	EvFormFieldButton *field_button = EV_FORM_FIELD_BUTTON (field);
+ 
++	if (priv->form_dialog_running)
++		return;
++
+ 	if (field_button->type == EV_FORM_FIELD_BUTTON_PUSH) {
+ 		/* Clicks forms that act on them, such as XFA forms. */
+ 		ev_document_forms_form_field_button_set_state (EV_DOCUMENT_FORMS (priv->document),
+@@ -2800,7 +2994,7 @@ ev_view_form_field_text_save (EvView    *view,
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
+ 	EvFormField *field;
+ 
+-	if (!priv->document)
++	if (!priv->document || priv->form_dialog_running)
+ 		return;
+ 
+ 	field = g_object_get_data (G_OBJECT (widget), "form-field");
+@@ -2935,7 +3129,7 @@ ev_view_form_field_choice_save (EvView    *view,
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
+ 	EvFormField *field;
+ 
+-	if (!priv->document)
++	if (!priv->document || priv->form_dialog_running)
+ 		return;
+ 
+ 	field = g_object_get_data (G_OBJECT (widget), "form-field");
+@@ -8671,6 +8865,8 @@ ev_view_document_changed_cb (EvDocumentModel *model,
+                 }
+ 
+ 		priv->document = document ? g_object_ref (document) : NULL;
++		if (priv->document)
++			ev_view_install_form_dialogs (view);
+ 		priv->find_page = -1;
+ 		priv->find_result = 0;
+ 
+-- 
+2.43.0
+

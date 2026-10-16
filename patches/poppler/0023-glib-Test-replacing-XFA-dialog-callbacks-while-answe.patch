@@ -1,0 +1,64 @@
+From 987378d261b356118103210465c04713b0ac8a07 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:47:58 -0700
+Subject: [PATCH] glib: Test replacing XFA dialog callbacks while answering
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ glib/tests/check_xfa.c | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index ba3fa19..701c8fe 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -1019,6 +1019,14 @@ static void count_destroy(gpointer user_data)
+     ++dialogs_destroyed;
+ }
+ 
++static PopplerXfaAnswer answer_and_detach(const gchar *title, const gchar *message, PopplerXfaButtons buttons, gpointer user_data)
++{
++    poppler_document_xfa_set_dialog_funcs(POPPLER_DOCUMENT(user_data), NULL, NULL, NULL, NULL);
++    // The currently executing callback still owns its data.
++    g_assert_cmpint(dialogs_destroyed, ==, 1);
++    return POPPLER_XFA_ANSWER_NO;
++}
++
+ static void test_dialogs(void)
+ {
+     GBytes *bytes = build_pdf_from(dialogs_xdp);
+@@ -1075,13 +1083,27 @@ static void test_dialogs(void)
+         g_object_unref(rerendered);
+         dialog_answer = POPPLER_XFA_ANSWER_NO;
+         prompt_answer = "2025";
++
++        /* A viewer can be detached while its modal dialog is open. */
++        poppler_document_xfa_set_dialog_funcs(rendered, answer_and_detach, NULL, rendered, count_destroy);
++        g_assert_cmpint(dialogs_destroyed, ==, 1);
++        ask = field_named(rendered, "Ask");
++        poppler_form_field_button_set_state(ask, TRUE);
++        g_object_unref(ask);
++        g_assert_cmpint(dialogs_destroyed, ==, 2);
++        PopplerDocument *detached = poppler_document_render_xfa(rendered, &err);
++        g_assert_no_error(err);
++        text = page_text(detached);
++        g_assert_nonnull(strstr(text, "kept 2024 resumed"));
++        g_free(text);
++        g_object_unref(detached);
+     }
+     /* The question was answered: nothing to report. */
+     gchar **messages = poppler_document_xfa_take_messages(rendered);
+     g_assert_true(messages == NULL || messages[0] == NULL);
+     g_strfreev(messages);
+     poppler_document_xfa_set_dialog_funcs(rendered, NULL, NULL, NULL, NULL);
+-    g_assert_cmpint(dialogs_destroyed, ==, 1);
++    g_assert_cmpint(dialogs_destroyed, ==, asked == 0 ? 1 : 2);
+     g_object_unref(rendered);
+     g_object_unref(source);
+     g_bytes_unref(bytes);
+-- 
+2.43.0
+

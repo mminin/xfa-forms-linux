@@ -26,7 +26,7 @@ tail -n +2 "$ROOT/corpus/forms.tsv" | while IFS="$TAB" read -r file dept title p
         pages=failed
     fi
     errors=$(grep -c "script error\|script object" "$OUT/$name.log" || true)
-    images=$(grep -o "unsupported image image/[a-z]*" "$OUT/$name.log" | sed 's/.*image\///' | sort -u | tr '\n' ' ')
+    images=$(grep -o "unsupported image image/[a-z]*" "$OUT/$name.log" | sed 's/.*image\///' | sort -u | paste -sd ' ' -)
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$file" "$kind" "$page1" "$pages" "$errors" "${images:--}" >> "$OUT/results.tsv"
 done
 column -t -s "$TAB" "$OUT/results.tsv"

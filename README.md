@@ -31,6 +31,8 @@ For the tested form, in the patched Evince:
 - **Generate letter** builds the letter from your answers, and **Print letter**
   prints only those pages. Screen-only buttons are left off the printout.
 - The English/Français switch keeps what you have entered.
+- Questions and text prompts from scripts wait for your answer while editing;
+  cancelling a dialog or closing its window returns cancellation to the script.
 - **Save a copy** keeps the form's scripts and its current state, so the saved file
   can be reopened, edited and regenerated. Reopening such a file needs this
   patched viewer; Adobe Reader and other viewers won't restore that state.
@@ -48,8 +50,9 @@ Known gaps, most of them found with the [corpus](corpus/README.md):
   and black faces. Nothing is embedded.
 - Images are drawn from JPEG, PNG, GIF, BMP and TIFF data; SVG and external
   (linked) images are not.
-- Script message boxes are answered "Yes"/"OK" automatically and then shown, and
-  `xfa.host.response()` prompts get their default answer.
+- Scripts run before a view is attached, and command-line rendering, still answer
+  questions automatically and use default prompt text. Interactive editing uses
+  real dialogs. Remaining corpus script failures are listed in `corpus/README.md`.
 
 ## How it works
 
@@ -119,6 +122,18 @@ This runs the synthetic Poppler tests, which build small XFA forms in memory:
 - rendering and script-driven re-rendering
 - radio buttons across save and reopen cycles
 - scripts and form state across save and reopen
+- images, table layout, static field values, scripting, data binding, FormCalc,
+  barcodes, picture clauses, pagination and script-requested focus
+- dialog answers, cancellations, callback replacement and an answer taking longer
+  than the script execution limit
+
+On a private GTK display, `scripts/test-dialogs.sh` also exercises the Evince
+backend and view with synthetic forms: question button sets, prompt defaults and
+edits, cancellation, repeated re-rendering and closing the parent window. It needs
+an active display and session bus, such as the `tools/headless/` session. With
+that session running, set `GDK_BACKEND=wayland`, `WAYLAND_DISPLAY=wl-xfa`, the same
+`XDG_RUNTIME_DIR` used to start it, and
+`DBUS_SESSION_BUS_ADDRESS="$(cat tools/headless/bus)"`.
 
 If the sample form has been downloaded, it then also fills it in with made-up data
 (`tools/consent-letter-scenario.sh`), clicks Generate letter, and checks that the
@@ -130,7 +145,7 @@ touching your desktop. See the comments in `run-session.sh` and `drive.py`.
 
 ## Patches
 
-Poppler (`patches/poppler/`, about 12,300 added lines):
+Poppler (`patches/poppler/`, about 13,100 added lines):
 
 | Patch | What it does |
 |---|---|
@@ -150,9 +165,11 @@ Poppler (`patches/poppler/`, about 12,300 added lines):
 | 0018 | Picture clauses for display, editing and validation; validation results |
 | 0019 | Pagination: page breaks after objects, keeping objects together, repeated table headers |
 | 0020 | `xfa.host.setFocus()`: scripts move the viewer to a field |
-| 0021 | Viewers answer the questions and prompts of scripts (glib API; Evince does not use it yet) |
+| 0021 | Viewers answer the questions and prompts of scripts (glib API) |
+| 0022 | Exclude time waiting for a dialog from script deadlines; keep callbacks alive while answering |
+| 0023 | Test replacing dialog callbacks while a question is being answered |
 
-Evince (`patches/evince/`, about 650 added lines):
+Evince (`patches/evince/`, about 1,000 added lines):
 
 | Patch | What it does |
 |---|---|
@@ -164,6 +181,7 @@ Evince (`patches/evince/`, about 650 added lines):
 | 0006–0007 | Keep editing the field you went to when a form re-renders |
 | 0008 | Ctrl+A selects the text of the field being edited, not the whole document |
 | 0009 | Move to the field that form scripts ask for, such as the first one to correct |
+| 0010 | Show script questions and text prompts, returning the user's answer or cancellation |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.
@@ -184,7 +202,7 @@ worth considering.
 
 Most of this code was written with AI coding assistants: Anthropic's Claude (commits
 carrying a `Co-Authored-By: Claude` line) and OpenAI Codex using **GPT-6.1 Sol**
-(`gpt-6.1-sol`, reasoning effort `high`; Poppler 0008–0009 and Evince 0007–0008).
+(`gpt-6.1-sol`, reasoning effort `high`; Poppler 0008–0009 and 0022–0023; Evince 0007–0008 and 0010).
 The model and effort were verified against the local Codex session records.
 The [PR plan](PR_PLAN.md) records the contribution breakdown and attribution to
 carry into upstream submissions. The human maintainer, mminin <mminin2010@gmail.com>, directed

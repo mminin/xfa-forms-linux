@@ -25,16 +25,19 @@ Patch numbers refer to the current series in `patches/`.
 | Contributor / assistant | Work |
 |---|---|
 | Human maintainer, mminin | Directed the work, provided requirements and interactive feedback, and owns review, publication and maintenance. |
-| Claude Opus 5.5, as credited in existing commit trailers | Initial XFA engine, detection and rendering APIs, scripting, layout, initial Evince integration and fixes through Poppler 0007 and Evince 0006; later source-package cleanup and the federal-form corpus. |
+| Claude Opus 5.5, as credited in existing commit trailers | Initial XFA engine, detection and rendering APIs, scripting, layout, initial Evince integration and fixes through Poppler 0007 and Evince 0006; later source-package cleanup, the federal-form corpus, Poppler 0010–0021 (images, tables, scripting, data DOM, FormCalc, validation, barcodes, formatting, pagination, focus and dialog API) and Evince 0009 (script-requested focus). |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0008: preserve radio-button appearance states in ordinary PDF exports, with save/reopen regression coverage. |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0009: save and restore the live XFA form, scripts and form state; CLI support and regression coverage for saving, reopening and generating output again. |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Evince 0007: complete editor restoration after re-rendering, including deferred combo-close callbacks, allocation and stale focus handling. |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Evince 0008: make Select All select text in the active form editor. |
+| OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0022–0023 and Evince 0010: complete the interactive question/prompt UI, exclude waiting time from script deadlines, preserve callback lifetimes and test callback replacement, cancellation and re-rendering. |
 
 Codex also added the focus regression driver (`tools/headless/check-focus.py`),
 fixed headless test paths and metadata placement, implemented the desktop launcher
 installer (`scripts/install-desktop.py`), performed GUI and save/reopen checks,
-and drafted the original publication plan. Shared build scripts, the initial GUI
+and drafted the original publication plan. The follow-up added the synthetic
+Evince dialog test (`tools/headless/check-dialogs.c`, `scripts/test-dialogs.sh`)
+and refreshed the 129-form corpus results and remaining-gap notes. Shared build scripts, the initial GUI
 harness and the initial consent-letter scenario predate that handoff; later
 packaging edits may include further Claude changes.
 
@@ -50,7 +53,7 @@ was used.
 > reasoning effort. Claude assisted with the initial XFA engine and viewer
 > integration and subsequent packaging. Codex assisted with editor restoration,
 > Select All, radio-button export behavior, live XFA save/reopen support,
-> regression checks and desktop integration. The human maintainer is responsible
+> script question/prompt dialogs, regression checks and desktop integration. The human maintainer is responsible
 > for reviewing and maintaining the submitted changes.
 
 For an individual merge request, narrow this wording to its actual patches.

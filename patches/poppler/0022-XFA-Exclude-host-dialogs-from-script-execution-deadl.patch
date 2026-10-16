@@ -1,0 +1,156 @@
+From 4308fc5a4608cc1c473a551f21df2584c5f31030 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:47:09 -0700
+Subject: [PATCH] XFA: Exclude host dialogs from script execution deadlines
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ glib/tests/check_xfa.c | 44 +++++++++++++++++++++++++++++++++++++++---
+ poppler/XFAForm.cc     |  9 ++++++---
+ poppler/XFAScript.cc   | 11 +++++++++--
+ 3 files changed, 56 insertions(+), 8 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index c0ad4c7..ba3fa19 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -982,6 +982,7 @@ static const char *dialogs_xdp = "<?xml version=\"1.0\"?>\n"
+                                  "<event activity=\"click\"><script contentType=\"application/x-javascript\">"
+                                  "var a = xfa.host.messageBox(\"Clear the form?\", \"Clear\", 2, 2);"
+                                  "out.rawValue = (a == 4 ? \"cleared\" : \"kept\") + \" \" + xfa.host.response(\"Which year?\", \"Year\", \"2024\");"
++                                 "for (var i = 0; i &lt; 50000; ++i) Math.sqrt(i); out.rawValue += \" resumed\";"
+                                  "</script></event></field>"
+                                  "<field name=\"out\" w=\"3in\" h=\"0.4in\" access=\"nonInteractive\"><ui><textEdit/></ui></field>"
+                                  "</subform>"
+@@ -989,6 +990,9 @@ static const char *dialogs_xdp = "<?xml version=\"1.0\"?>\n"
+                                  "</xdp:xdp>";
+ 
+ static int dialogs_destroyed;
++static gboolean slow_dialog;
++static PopplerXfaAnswer dialog_answer = POPPLER_XFA_ANSWER_NO;
++static const gchar *prompt_answer = "2025";
+ 
+ static PopplerXfaAnswer answer_no(const gchar *title, const gchar *message, PopplerXfaButtons buttons, gpointer user_data)
+ {
+@@ -996,7 +1000,10 @@ static PopplerXfaAnswer answer_no(const gchar *title, const gchar *message, Popp
+     g_assert_cmpstr(message, ==, "Clear the form?");
+     g_assert_cmpint(buttons, ==, POPPLER_XFA_BUTTONS_YES_NO);
+     ++*(int *)user_data;
+-    return POPPLER_XFA_ANSWER_NO;
++    if (slow_dialog) {
++        g_usleep(6 * G_USEC_PER_SEC);
++    }
++    return dialog_answer;
+ }
+ 
+ static gchar *answer_year(const gchar *title, const gchar *question, const gchar *default_answer, gpointer user_data)
+@@ -1004,7 +1011,7 @@ static gchar *answer_year(const gchar *title, const gchar *question, const gchar
+     g_assert_cmpstr(question, ==, "Which year?");
+     g_assert_cmpstr(default_answer, ==, "2024");
+     ++*(int *)user_data;
+-    return g_strdup("2025");
++    return g_strdup(prompt_answer);
+ }
+ 
+ static void count_destroy(gpointer user_data)
+@@ -1034,9 +1041,40 @@ static void test_dialogs(void)
+         PopplerDocument *rerendered = poppler_document_render_xfa(rendered, &err);
+         g_assert_no_error(err);
+         char *text = page_text(rerendered);
+-        g_assert_nonnull(strstr(text, "kept 2025"));
++        g_assert_nonnull(strstr(text, "kept 2025 resumed"));
++        g_free(text);
++
++        /* The callbacks survive re-rendering, including cancellation. */
++        dialog_answer = POPPLER_XFA_ANSWER_CANCEL;
++        prompt_answer = NULL;
++        ask = field_named(rerendered, "Ask");
++        poppler_form_field_button_set_state(ask, TRUE);
++        g_object_unref(ask);
++        PopplerDocument *cancelled = poppler_document_render_xfa(rerendered, &err);
++        g_assert_no_error(err);
++        text = page_text(cancelled);
++        g_assert_nonnull(strstr(text, "kept"));
++        g_assert_nonnull(strstr(text, "resumed"));
++        g_free(text);
++        g_object_unref(cancelled);
++
++        /* A person can take longer than the script's five-second budget. */
++        dialog_answer = POPPLER_XFA_ANSWER_YES;
++        prompt_answer = "2026";
++        slow_dialog = TRUE;
++        ask = field_named(rerendered, "Ask");
++        poppler_form_field_button_set_state(ask, TRUE);
++        g_object_unref(ask);
++        slow_dialog = FALSE;
++        PopplerDocument *slow = poppler_document_render_xfa(rerendered, &err);
++        g_assert_no_error(err);
++        text = page_text(slow);
++        g_assert_nonnull(strstr(text, "cleared 2026 resumed"));
+         g_free(text);
++        g_object_unref(slow);
+         g_object_unref(rerendered);
++        dialog_answer = POPPLER_XFA_ANSWER_NO;
++        prompt_answer = "2025";
+     }
+     /* The question was answered: nothing to report. */
+     gchar **messages = poppler_document_xfa_take_messages(rendered);
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 9452981..9db85ab 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -1607,8 +1607,10 @@ void XFAForm::hostMessage(const std::string &title, const std::string &text)
+ 
+ int XFAForm::hostQuestion(const std::string &title, const std::string &text, int buttons)
+ {
+-    if (buttons >= 1 && buttons <= 3 && dialogs.question) {
+-        const int answer = dialogs.question(title, text, buttons);
++    // A viewer may replace the callbacks while a modal dialog is open.
++    const auto question = dialogs.question;
++    if (buttons >= 1 && buttons <= 3 && question) {
++        const int answer = question(title, text, buttons);
+         if (answer >= 1 && answer <= 4) {
+             return answer;
+         }
+@@ -1619,7 +1621,8 @@ int XFAForm::hostQuestion(const std::string &title, const std::string &text, int
+ 
+ std::optional<std::string> XFAForm::hostPrompt(const std::string &title, const std::string &question, const std::string &defaultAnswer)
+ {
+-    return dialogs.prompt ? dialogs.prompt(title, question, defaultAnswer) : std::optional<std::string>(defaultAnswer);
++    const auto prompt = dialogs.prompt;
++    return prompt ? prompt(title, question, defaultAnswer) : std::optional<std::string>(defaultAnswer);
+ }
+ 
+ void XFAForm::hostLaunchURL(const std::string &url)
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 30c4517..c965b07 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -1397,12 +1397,19 @@ NATIVE(question)
+ {
+     int32_t buttons = 0;
+     JS_ToInt32(ctx, &buttons, ARG(2));
+-    return JS_NewInt32(ctx, formOf(ctx)->hostQuestion(strArg(ctx, ARG(0)), strArg(ctx, ARG(1)), buttons));
++    const auto start = std::chrono::steady_clock::now();
++    const int answer = formOf(ctx)->hostQuestion(strArg(ctx, ARG(0)), strArg(ctx, ARG(1)), buttons);
++    // Waiting for a person is not script execution time.
++    priv(ctx)->deadline += std::chrono::steady_clock::now() - start;
++    return JS_NewInt32(ctx, answer);
+ }
+ 
+ NATIVE(prompt)
+ {
+-    return optValue(ctx, formOf(ctx)->hostPrompt(strArg(ctx, ARG(0)), strArg(ctx, ARG(1)), strArg(ctx, ARG(2))));
++    const auto start = std::chrono::steady_clock::now();
++    const auto answer = formOf(ctx)->hostPrompt(strArg(ctx, ARG(0)), strArg(ctx, ARG(1)), strArg(ctx, ARG(2)));
++    priv(ctx)->deadline += std::chrono::steady_clock::now() - start;
++    return optValue(ctx, answer);
+ }
+ 
+ NATIVE(focus)
+-- 
+2.43.0
+

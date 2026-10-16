@@ -68,72 +68,65 @@ date.
 
 ### The XFA engine in this repository
 
-The engine lays out all 105 dynamic forms, each in under a quarter of a second. How far
-each one works:
+A fresh blank-form render check on 2026-10-16, after the image, table, scripting,
+formatting, pagination and dialog changes, rendered all 129 forms without a failed
+render. 119 forms logged no script errors. The remaining 10 logged 26 error
+occurrences, including repeated calculation passes.
 
-| Department | Works | Lays out | Partly | No |
+| Department | Kind | Forms rendered | No script errors | Script error occurrences |
 |---|---|---|---|---|
-| Global Affairs Canada | 1 | 0 | 0 | 0 |
-| IRCC | 0 | 0 | 6 | 8 |
-| CRA | 0 | 66 | 20 | 4 |
+| Global Affairs Canada | Dynamic | 1 | 1 | 0 |
+| IRCC | Dynamic | 14 | 14 | 0 |
+| CRA | Dynamic | 90 | 81 | 20 |
+| CRA | Static | 6 | 6 | 0 |
+| Service Canada | Static | 10 | 10 | 0 |
+| IRCC | Static | 4 | 4 | 0 |
+| IRCC (passports) | Static | 4 | 3 | 6 |
 
-- **Works**: verified end to end, by filling in, generating, printing, saving and
-  reopening. So far only the consent letter.
-- **Lays out**: the blank form lays out and its scripts run without errors, but it has
-  not been tested by filling it in. All CRA forms are missing their PNG images
-  (the agency logo).
-- **Partly**: lays out, but some scripts fail, or tables are stacked instead of laid out
-  in columns.
-- **No**: the form's essential function needs a barcode, which the engine doesn't draw
-  yet. On the IRCC applications this is the **Validate** button, which checks the
-  answers and encodes them into 2D barcodes; IRCC's help centre says it works only in
-  Adobe Reader. The four CRA payment vouchers also carry a barcode.
+These are rendering and script-execution checks on blank forms. Only the consent
+letter has been verified end to end by filling, generating, printing, saving and
+reopening it. No script errors does not establish that a form's calculations,
+validation, data binding or barcodes produce correct submission-ready output.
+The patched viewer continues to use ordinary PDF pages for static XFA forms;
+this check explicitly renders those forms through the engine too.
 
-The IRCC forms and the consent letter:
+The previous results described PNG images, table layout, FormCalc and barcodes as
+unimplemented. Those features now have implementations and synthetic tests. The
+current render logs report no unsupported images in the 105 dynamic forms.
+Five static forms still log image decoding failures: TIFF in the four passport
+forms and JPEG in ISP-1300. Feature coverage and correctness still need tests
+with filled forms.
 
-| Form | Pages | Script errors | Result | Missing in the engine |
-|---|---|---|---|---|
-| Recommended consent letter for children travelling abroad (2123) | 2 | 0 | Works | - |
-| Generic Application Form for Canada (IMM 0008) | 6 | 10 | No | barcodes (Validate), FormCalc, table layout, images: bmp, tif |
-| Application for a Study Permit Made Outside of Canada (IMM 1294) | 6 | 17 | No | barcodes (Validate), FormCalc, table layout, images: bmp, tif |
-| Application for a Work Permit Made Outside of Canada (IMM 1295) | 6 | 16 | No | barcodes (Validate), FormCalc, table layout, images: bmp, tif |
-| Application to Sponsor, Sponsorship Agreement and Undertaking (IMM 1344) | 10 | 40 | No | barcodes (Validate), FormCalc, images: bmp, tif |
-| Application for visitor visa (temporary resident visa) (IMM 5257) | 6 | 15 | No | barcodes (Validate), FormCalc, table layout, images: bmp, tif |
-| Additional Family Information (IMM 5406) | 5 | 6 | Partly | table layout |
-| Application for a Permanent Resident Card (PR card) or Permanent Resident Travel Document (PRTD) [IMM 5444] | 8 | 16 | Partly | FormCalc, table layout |
-| Relationship Information And Sponsorship Evaluation Form (IMM 5532) | 20 | 2 | Partly | table layout |
-| Supplementary Information: Your Travels (IMM 5562) | 3 | 10 | Partly | - |
-| Schedule A: Background / Declaration Form (IMM 5669) | 12 | 24 | Partly | table layout |
-| Family Information Form – Visitors, Students and Workers (IMM 5707) | 4 | 3 | Partly | - |
-| Application to Change Conditions, Extend my Stay or Remain in Canada as a Visitor or Temporary Resident Permit Holder (IMM 5708) | 7 | 20 | No | barcodes (Validate), FormCalc, table layout, images: bmp, tif |
-| Application to Change Conditions, Extend my Stay or Remain in Canada as a Student (IMM 5709) | 7 | 21 | No | barcodes (Validate), FormCalc, table layout, images: bmp, tif |
-| Application to Change Conditions, Extend my Stay or Remain in Canada as a Worker (IMM 5710) | 6 | 21 | No | barcodes (Validate), FormCalc, table layout, images: bmp, tif |
+Forms still reporting script errors:
 
-Selected CRA forms:
+| File | Pages | Error occurrences |
+|---|---|---|
+| `inns3-fill-19e.pdf` | 1 | 2 |
+| `rc243-fill-26e.pdf` | 5 | 6 |
+| `t1000-3-fill-21e.pdf` | 2 | 1 |
+| `t1235-fill-20e.pdf` | 2 | 1 |
+| `t1236-fill-19e.pdf` | 2 | 3 |
+| `t1441-fill-24e.pdf` | 3 | 1 |
+| `t3ao-fill-23e.pdf` | 1 | 2 |
+| `t3inns3-fill-23e.pdf` | 1 | 2 |
+| `t7dr-fill-19e.pdf` | 1 | 2 |
+| `pptc040.pdf` | 10 | 6 |
 
-| Form | Pages | Script errors | Result | Missing in the engine |
-|---|---|---|---|---|
-| T1135 Foreign Income Verification Statement | 8 | 1 | Partly | table layout, images: png |
-| RC243 Tax-Free Savings Account (TFSA) Return | 5 | 9 | Partly | table layout, images: png |
-| RC728 2025 First Home Savings Account (FHSA) Return | 5 | 3 | Partly | table layout, images: png |
-| T3010 Registered Charity Information Return | 13 | 0 | Partly | table layout, images: png |
-| T657 Calculation of Capital Gains Deduction | 7 | 0 | Partly | table layout, images: png |
-| T3SCH15 Beneficial Ownership Information of a Trust | 2 | 0 | Lays out | images: png |
-| T1134 Information Return Relating to Controlled and Non-Controlled Foreign Affiliates (2021 and later taxation years) | 44 | 0 | Partly | table layout, images: png |
-| T106 Information Return of Non-Arm's Length Transactions with Non-Residents (2025 and later tax years) T106 Summary Form | 9 | 1 | Partly | images: png |
-| T1141 Information Return in Respect of Contributions to Non-Resident Trusts, Arrangements, or Entities (2025 and later tax years) | 9 | 1 | Partly | table layout, images: png |
-| T1142 Information Return in Respect of Distributions from and Indebtedness to a Non-Resident Trust | 7 | 0 | Partly | table layout, images: png |
-| T661 Scientific Research and Experimental Development (SR&ED) Expenditures Claim | 12 | 0 | Partly | table layout, images: png |
-| T2SCH75 Clean Technology Investment Tax Credit | 4 | 0 | Partly | table layout, images: png |
-| RC4649 Country-by-Country Report | 12 | 1 | Partly | table layout, images: png |
-| NR302 Declaration of eligibility for benefits (reduced tax) under a tax treaty for a partnership with non-resident partners | 28 | 12 | Partly | FormCalc, table layout, images: png |
+The logs identify several follow-up areas: Acrobat document APIs used by
+accessibility helpers (`dynamicXFAForm`, `getField` and field `userName`), default
+caption/value nodes used by paper-barcode scripts, and unresolved form-node
+references in the TFSA return, T1000-3 and a passport form. Investigate these
+against the source templates and synthetic reproductions before changing lookup
+rules or claiming the affected forms work.
 
-`results.tsv` has the per-form results for all 129 forms, as produced by
-`scripts/check-corpus.sh` on the test date.
+Broader implementation gaps include explicit `dataRef` bindings and synchronization
+with the data DOM, some FormCalc functions and predicates, time picture clauses,
+embedded fonts and linked/SVG images. During interactive editing Evince now asks
+script questions and accepts prompt text; scripts run before a view is attached,
+and command-line rendering, retain the engine's automatic fallback answers.
 
-The engine also renders all 24 static forms: the 16 CRA and Service Canada forms with
-no script errors, the IRCC and passport ones with 4 to 12. The patched Evince only uses
-the engine for dynamic forms, so static ones open as they did before.
+`results.tsv` contains the current per-form results for all 129 forms, produced by
+`scripts/check-corpus.sh`. The downloaded files are checked against `forms.tsv`.
 
 ## Upstream reports about XFA
 
