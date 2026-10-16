@@ -14,6 +14,10 @@ of Canada's [consent letter for children travelling outside Canada](https://trav
 (form 2123). It implements the XFA features that form uses, which is not general
 XFA compatibility. Nothing here has been reviewed or accepted upstream yet.
 
+[`corpus/`](corpus/README.md) measures 39 other federal forms. 15 of them, mostly IRCC
+immigration applications, are dynamic XFA forms that Linux PDF viewers can't open at
+all. This engine lays all of them out, but so far only the consent letter works fully.
+
 ## What works
 
 For the tested form, in the patched Evince:
@@ -29,14 +33,18 @@ For the tested form, in the patched Evince:
   patched viewer; Adobe Reader and other viewers won't restore that state.
 - **Print** or export gives an ordinary PDF that opens anywhere, without scripts.
 
-Known gaps:
+Known gaps, most of them found with the [corpus](corpus/README.md):
 
+- XFA table layouts (`layout="table"` and `"row"`) are stacked vertically instead of
+  laid out in columns. Most IRCC forms use them.
+- Barcode fields are not drawn, so IRCC's **Validate** button can't produce its 2D
+  barcodes.
 - FormCalc scripts are not supported (the tested form uses only JavaScript).
 - Data binding is simplified: initial `<datasets>` data is ignored.
 - Picture clauses (display and validation patterns) are ignored.
 - Fonts map onto the 14 standard PDF fonts, with horizontal scaling for narrow
   and black faces. Nothing is embedded.
-- Only GIF and JPEG images are drawn (no PNG, SVG or external images).
+- Only GIF and JPEG images are drawn (no PNG, BMP, TIFF, SVG or external images).
 - `xfa.host.setFocus` does nothing. Script message boxes are answered "Yes"/"OK"
   automatically and then shown.
 
