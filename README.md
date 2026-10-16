@@ -40,7 +40,8 @@ Known gaps, most of them found with the [corpus](corpus/README.md):
 
 - Barcode fields are not drawn, so IRCC's **Validate** button can't produce its 2D
   barcodes.
-- FormCalc scripts are not supported (the tested form uses only JavaScript).
+- FormCalc runs translated to JavaScript, without SOM predicates (`a.[b > 1]`), the
+  financial functions or picture-clause functions such as `Format()`.
 - Data binding is simplified: values are matched to data by name, `dataRef` bindings
   are ignored, and the form's values are kept in the form, not in the data DOM.
 - Picture clauses (display and validation patterns) are ignored.
@@ -141,6 +142,7 @@ Poppler (`patches/poppler/`, about 8,800 added lines):
 | 0012 | Draw the values of read-only and image fields |
 | 0013 | Scripting object model: form variables, script objects, item lists, colors and more |
 | 0014 | The data DOM: `xfa.datasets`, drop-down lists bound to data, global fields, initial data |
+| 0015 | FormCalc, translated to JavaScript |
 
 Evince (`patches/evince/`, about 600 added lines):
 
