@@ -1,7 +1,7 @@
 From ffa52b3ef552a794220af0b1ebb5438b3b7fe52d Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:26:54 -0700
-Subject: [PATCH 8/9] XFA: Preserve button appearance states in exported forms
+Subject: [PATCH] XFA: Preserve button appearance states in exported forms
 
 Do not request regeneration of supplied radio-button appearances. Viewers can otherwise replace the on/off appearance dictionary with a single stream when saving, breaking subsequent selections. Cover repeated switching, rendering, saving and reopening with a synthetic XFA form.
 

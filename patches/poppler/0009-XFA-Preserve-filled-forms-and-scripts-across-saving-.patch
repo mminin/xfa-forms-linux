@@ -1,7 +1,7 @@
 From 11ca9a908d07441c40dc4f0dd5ed69905697ea4a Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:53:17 -0700
-Subject: [PATCH 9/9] XFA: Preserve filled forms and scripts across saving and
+Subject: [PATCH] XFA: Preserve filled forms and scripts across saving and
  reopening
 
 Save the original XDP together with a versioned form DOM snapshot. Restore values, instance-manager prototypes, visibility and rich text without rerunning initialization. Reconnect script objects so saved forms can regenerate letters. Cover file and FD saves with repeated reopen, edit and scripted row-creation tests; add an explicit reusable-form CLI export.

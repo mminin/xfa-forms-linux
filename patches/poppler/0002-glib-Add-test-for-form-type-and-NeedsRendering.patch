@@ -1,7 +1,7 @@
 From e21408f43ead24cac9fad70f5cc9b0606f59f7e9 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 13:53:39 -0700
-Subject: [PATCH 2/9] glib: Add test for form type and NeedsRendering
+Subject: [PATCH] glib: Add test for form type and NeedsRendering
 
 Builds minimal PDFs in memory, so no new file is needed in the test data
 repository: no form, AcroForm, dynamic XFA (array, NeedsRendering true)

@@ -1,7 +1,7 @@
 From b870c481cacea3dae77e364d2ae66ef3e15f3a1b Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:18:00 -0700
-Subject: [PATCH 8/8] shell: Select text in the active editor with Select All
+Subject: [PATCH] shell: Select text in the active editor with Select All
 
 When a form entry or text view has focus, apply Select All to that editor. Selecting document text instead prevented subsequent clicks from activating another form field.
 

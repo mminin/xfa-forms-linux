@@ -38,8 +38,6 @@ For the tested form, in the patched Evince:
 
 Known gaps, most of them found with the [corpus](corpus/README.md):
 
-- XFA table layouts (`layout="table"` and `"row"`) are stacked vertically instead of
-  laid out in columns. Most IRCC forms and many CRA forms use them.
 - Barcode fields are not drawn, so IRCC's **Validate** button can't produce its 2D
   barcodes.
 - FormCalc scripts are not supported (the tested form uses only JavaScript).
@@ -47,8 +45,8 @@ Known gaps, most of them found with the [corpus](corpus/README.md):
 - Picture clauses (display and validation patterns) are ignored.
 - Fonts map onto the 14 standard PDF fonts, with horizontal scaling for narrow
   and black faces. Nothing is embedded.
-- Only GIF and JPEG images are drawn (no PNG, BMP, TIFF, SVG or external images), so
-  CRA forms lose their logo.
+- Images are drawn from JPEG, PNG, GIF, BMP and TIFF data; SVG and external
+  (linked) images are not.
 - `xfa.host.setFocus` does nothing. Script message boxes are answered "Yes"/"OK"
   automatically and then shown.
 
@@ -128,7 +126,7 @@ touching your desktop. See the comments in `run-session.sh` and `drive.py`.
 
 ## Patches
 
-Poppler (`patches/poppler/`, about 7,900 added lines):
+Poppler (`patches/poppler/`, about 8,800 added lines):
 
 | Patch | What it does |
 |---|---|
@@ -137,6 +135,8 @@ Poppler (`patches/poppler/`, about 7,900 added lines):
 | 0005–0007 | Rendering XFA forms through poppler-glib, forwarding field edits, with a test |
 | 0008 | Keep radio-button appearances intact in exported forms |
 | 0009 | Save filled forms with their scripts and state, and reopen them |
+| 0010 | Decode PNG, BMP and TIFF images, with transparency |
+| 0011 | Lay out tables in columns |
 
 Evince (`patches/evince/`, about 600 added lines):
 

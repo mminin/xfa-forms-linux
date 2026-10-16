@@ -1,8 +1,8 @@
 From 013c336b3c7e4552f0951150f2db859961e2f79f Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:56:15 -0700
-Subject: [PATCH 5/8] sidebar-thumbnails: Render thumbnails once the icon view
- is laid out
+Subject: [PATCH] sidebar-thumbnails: Render thumbnails once the icon view is
+ laid out
 
 When a document is loaded, the icon view does not know the positions of
 its items yet, so there is no visible range and no thumbnail is

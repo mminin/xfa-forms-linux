@@ -1,7 +1,7 @@
 From c81e8862923c5964f43e86050b0f1907397dd50d Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:03:52 -0700
-Subject: [PATCH 5/9] glib: Render dynamic XFA forms
+Subject: [PATCH] glib: Render dynamic XFA forms
 
 poppler_document_render_xfa() runs the XFA form of a document and returns
 a document with the generated pages and AcroForm fields. Changes made

@@ -1,7 +1,7 @@
 From 641d8d8e1263fcb7840ec62300b2f6b83aefc6a3 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 14:57:48 -0700
-Subject: [PATCH 3/9] Add an engine for dynamic XFA forms
+Subject: [PATCH] Add an engine for dynamic XFA forms
 
 Dynamic XFA forms (NeedsRendering true) only contain a "please use Adobe
 Reader" page: their real pages have to be generated from the XFA template

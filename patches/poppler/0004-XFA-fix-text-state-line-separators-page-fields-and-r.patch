@@ -1,7 +1,7 @@
 From 6bc1f46aaa769f7f9aee08521760f2de462c64d4 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 14:59:56 -0700
-Subject: [PATCH 4/9] XFA: fix text state, line separators, page fields and row
+Subject: [PATCH] XFA: fix text state, line separators, page fields and row
  splitting
 
 Set Tz and Tc in every text block: they are graphics state and leaked

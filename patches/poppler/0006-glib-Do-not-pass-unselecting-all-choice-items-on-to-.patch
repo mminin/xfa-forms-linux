@@ -1,7 +1,7 @@
 From 7478941697971ef2e94f1330577032ce9da35709 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:08:58 -0700
-Subject: [PATCH 6/9] glib: Do not pass unselecting all choice items on to XFA
+Subject: [PATCH] glib: Do not pass unselecting all choice items on to XFA
  forms
 
 Viewers unselect all items before selecting the new one; the form would

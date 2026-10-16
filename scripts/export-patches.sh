@@ -7,6 +7,6 @@ grep -v '^#' "$ROOT/UPSTREAM" | while read -r name url base; do
     [ -n "$name" ] && [ -d "$ROOT/upstream/$name/.git" ] || continue
     [ "$(git -C "$ROOT/upstream/$name" rev-list --count "$base..xfa-support")" -gt 0 ] || continue
     rm -rf "$ROOT/patches/$name"
-    git -C "$ROOT/upstream/$name" format-patch -q -o "$ROOT/patches/$name" "$base..xfa-support"
+    git -C "$ROOT/upstream/$name" format-patch -q -N -o "$ROOT/patches/$name" "$base..xfa-support"
     echo "$name: $(ls "$ROOT/patches/$name" | wc -l) patch(es)"
 done

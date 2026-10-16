@@ -1,7 +1,7 @@
 From b8b75d16128066f78cbec82bb58d40e4ef290e4a Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:41:00 -0700
-Subject: [PATCH 2/8] libview: Pop up choice fields once they are on screen
+Subject: [PATCH] libview: Pop up choice fields once they are on screen
 
 gtk_combo_box_popup() does nothing on a combo box that is not realized
 yet, so clicking a combo box form field only showed an empty combo box

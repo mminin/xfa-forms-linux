@@ -1,7 +1,7 @@
 From 567281834ea050349b82d957bdf07f6dbf6d142b Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 13:53:39 -0700
-Subject: [PATCH 1/9] glib: Add poppler_document_get_form_type() and
+Subject: [PATCH] glib: Add poppler_document_get_form_type() and
  get_needs_rendering()
 
 Expose Catalog::getFormType() to glib users, as the Qt6 frontend already

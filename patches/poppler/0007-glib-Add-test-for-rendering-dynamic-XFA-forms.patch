@@ -1,7 +1,7 @@
 From 281b72cb0276340d1ea4d331a7c9f3b1a351a43f Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:12:33 -0700
-Subject: [PATCH 7/9] glib: Add test for rendering dynamic XFA forms
+Subject: [PATCH] glib: Add test for rendering dynamic XFA forms
 
 Builds a small dynamic XFA form in memory, so no file is needed in the
 test data repository, and checks that its scripts run, that a changed

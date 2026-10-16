@@ -1,8 +1,7 @@
 From ebe987f678e3da7046c2f633d3bbaa490ed515d7 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:18:00 -0700
-Subject: [PATCH 7/8] libview: Preserve restored editors after form
- re-rendering
+Subject: [PATCH] libview: Preserve restored editors after form re-rendering
 
 Ignore deferred popup-close callbacks from detached editors and retain the view until those callbacks finish. Allocate restored editors after page rendering completes and clear the old focused mapping before destroying its cache.
 

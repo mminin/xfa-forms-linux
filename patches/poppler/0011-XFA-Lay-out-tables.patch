@@ -1,0 +1,392 @@
+From b7ad06933314bf4f9a378ef2f011ed0e68ff434a Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 15:31:36 -0700
+Subject: [PATCH] XFA: Lay out tables
+
+Tables (layout="table") were stacked as one column, which made the
+tables of most immigration and many tax forms unusable. Rows now place
+their cells side by side in the columns given by columnWidths, cells
+span columns with colSpan, and the cells of a row take the height of
+the highest one. Columns without a width are as wide as their widest
+cell. Rows outside tables lay out side by side with natural widths.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c |  66 ++++++++++++++++++
+ poppler/XFALayout.cc   | 155 +++++++++++++++++++++++++++++++++--------
+ 2 files changed, 192 insertions(+), 29 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 6a9604b..3cbb5bf 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -3,6 +3,7 @@
+  * on a small dynamic XFA form built in memory
+  */
+ 
++#include <math.h>
+ #include <string.h>
+ #include <gio/gio.h>
+ 
+@@ -437,6 +438,70 @@ static void test_images(void)
+     g_free(xdp);
+ }
+ 
++/* A table of two columns, 1 and 2 inches wide, after a 1 inch margin: the
++ * second row's cell spans both. */
++static const char *table_xdp = "<?xml version=\"1.0\"?>\n"
++                               "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                               "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                               "<subform name=\"form1\" layout=\"tb\">"
++                               "<pageSet><pageArea name=\"Page1\">"
++                               "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                               "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/>"
++                               "</pageArea></pageSet>"
++                               "<subform name=\"Table\" layout=\"table\" columnWidths=\"1in 2in\">"
++                               "<subform name=\"Row1\" layout=\"row\">"
++                               "<field name=\"a\" h=\"0.3in\"><ui><textEdit/></ui><assist><toolTip>a</toolTip></assist></field>"
++                               "<field name=\"b\" h=\"0.5in\"><ui><textEdit/></ui><assist><toolTip>b</toolTip></assist></field>"
++                               "</subform>"
++                               "<subform name=\"Row2\" layout=\"row\">"
++                               "<field name=\"c\" colSpan=\"2\" h=\"0.3in\"><ui><textEdit/></ui><assist><toolTip>c</toolTip></assist></field>"
++                               "</subform>"
++                               "</subform>"
++                               "</subform>"
++                               "</template>"
++                               "</xdp:xdp>";
++
++static void test_table(void)
++{
++    /* x1, x2 and the top, in points from the top left corner */
++    static const struct
++    {
++        const char *name;
++        double x1, x2, top;
++    } expected[] = { { "a", 72, 144, 72 }, { "b", 144, 288, 72 }, { "c", 72, 288, 108 } };
++    GBytes *bytes = build_pdf_from(table_xdp);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    PopplerPage *page = poppler_document_get_page(rendered, 0);
++    double width, height;
++    poppler_page_get_size(page, &width, &height);
++    GList *mapping = poppler_page_get_form_field_mapping(page);
++    int found = 0;
++    for (GList *l = mapping; l; l = l->next) {
++        PopplerFormFieldMapping *m = l->data;
++        char *name = poppler_form_field_get_alternate_ui_name(m->field);
++        for (gsize i = 0; i < G_N_ELEMENTS(expected); ++i) {
++            if (g_strcmp0(name, expected[i].name) == 0) {
++                /* The first row is as high as its highest cell. */
++                g_assert_cmpfloat(fabs(m->area.x1 - expected[i].x1), <, 0.5);
++                g_assert_cmpfloat(fabs(m->area.x2 - expected[i].x2), <, 0.5);
++                g_assert_cmpfloat(fabs(height - m->area.y2 - expected[i].top), <, 0.5);
++                ++found;
++            }
++        }
++        g_free(name);
++    }
++    g_assert_cmpint(found, ==, G_N_ELEMENTS(expected));
++    poppler_page_free_form_field_mapping(mapping);
++    g_object_unref(page);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -444,5 +509,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/saved-radio", test_saved_radio);
+     g_test_add_func("/xfa/saved-scripts", test_saved_scripts);
+     g_test_add_func("/xfa/images", test_images);
++    g_test_add_func("/xfa/table", test_table);
+     return g_test_run();
+ }
+diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
+index f6ce600..54abf63 100644
+--- a/poppler/XFALayout.cc
++++ b/poppler/XFALayout.cc
+@@ -17,6 +17,8 @@
+ #include <algorithm>
+ #include <deque>
+ #include <memory>
++#include <numeric>
++#include <utility>
+ 
+ static const double eps = 0.01;
+ 
+@@ -148,6 +150,8 @@ struct Box
+     size_t lastLine = std::numeric_limits<size_t>::max();
+     bool hasStart = true;
+     bool hasEnd = true;
++    // A row of a split left-to-right container, standing for its children.
++    bool fragmentRow = false;
+ 
+     // Pagination.
+     std::string breakTarget;
+@@ -229,10 +233,13 @@ private:
+         double used = 0;
+     };
+ 
+-    Box measure(XFANode *node, double availW);
+-    void measureContainer(Box &b, double availW);
+-    void measureDraw(Box &b, double availW);
+-    void measureField(Box &b, double availW);
++    // forcedW is the width of a table cell, overriding the node's own.
++    Box measure(XFANode *node, double availW, std::optional<double> forcedW = std::nullopt);
++    void measureContainer(Box &b, double availW, std::optional<double> forcedW);
++    void measureTable(Box &b, double innerW);
++    void measureRow(Box &b, double innerW, const std::vector<double> *columns, double &contentW, double &contentH);
++    void measureDraw(Box &b, std::optional<double> forcedW);
++    void measureField(Box &b, std::optional<double> forcedW);
+ 
+     Fit split(Box &box, double avail, bool pageHasContent, Box &head, Box &tail, PendingBreak &brk);
+     Fit splitFlow(Box &box, double avail, bool pageHasContent, Box &head, Box &tail, PendingBreak &brk);
+@@ -249,24 +256,26 @@ private:
+     std::vector<const XFANode *> pageAreas;
+     std::map<const XFANode *, int> areaUses;
+     std::optional<PageState> page;
++    // Column widths for the row being measured, set by its table.
++    const std::vector<double> *tableColumns = nullptr;
+ };
+ 
+ //------------------------------------------------------------------------
+ // Measuring
+ //------------------------------------------------------------------------
+ 
+-Box Layouter::measure(XFANode *node, double availW)
++Box Layouter::measure(XFANode *node, double availW, std::optional<double> forcedW)
+ {
+     Box b;
+     b.node = node;
+     b.margin = XFAMarginOf(node);
+     const std::string &cls = node->getClassName();
+     if (cls == "draw") {
+-        measureDraw(b, availW);
++        measureDraw(b, forcedW);
+     } else if (cls == "field") {
+-        measureField(b, availW);
++        measureField(b, forcedW);
+     } else {
+-        measureContainer(b, availW);
++        measureContainer(b, availW, forcedW);
+     }
+ 
+     if (const XFANode *bb = node->firstChild("breakBefore")) {
+@@ -295,28 +304,34 @@ Box Layouter::measure(XFANode *node, double availW)
+     return b;
+ }
+ 
+-void Layouter::measureContainer(Box &b, double availW)
++void Layouter::measureContainer(Box &b, double availW, std::optional<double> forcedW)
+ {
+     XFANode *node = b.node;
+     const std::string &cls = node->getClassName();
++    const std::vector<double> *columns = std::exchange(tableColumns, nullptr);
+     b.layout = node->getAttr("layout", cls == "subformSet" ? "tb" : "position");
+     if (b.layout == "rl-tb") {
+         b.layout = "lr-tb";
+-    } else if (b.layout == "row" || b.layout == "table" || b.layout == "rl-row") {
+-        b.layout = "tb";
+     }
+     const XFAInsets &m = b.margin;
+-    const bool fixedW = node->getAttr("w") != nullptr;
+-    const double outerW = fixedW ? XFAMeasureAttr(node, "w") : availW;
++    const bool fixedW = forcedW || node->getAttr("w");
++    const double outerW = forcedW ? *forcedW : fixedW ? XFAMeasureAttr(node, "w") : availW;
+     const double innerW = std::max(0.0, outerW - m.left - m.right);
+ 
+-    for (const auto &c : node->getChildren()) {
+-        if (isLayoutChild(form, c.get())) {
+-            b.children.push_back(measure(c.get(), innerW));
++    double contentW = 0, contentH = 0;
++    if (b.layout == "table") {
++        measureTable(b, innerW);
++        // Then laid out as "tb": pages break between rows.
++        b.layout = "tb";
++    } else if (b.layout == "row" || b.layout == "rl-row") {
++        measureRow(b, innerW, columns, contentW, contentH);
++    } else {
++        for (const auto &c : node->getChildren()) {
++            if (isLayoutChild(form, c.get())) {
++                b.children.push_back(measure(c.get(), innerW));
++            }
+         }
+     }
+-
+-    double contentW = 0, contentH = 0;
+     if (b.layout == "tb") {
+         double y = m.top;
+         for (Box &c : b.children) {
+@@ -342,7 +357,7 @@ void Layouter::measureContainer(Box &b, double availW)
+             contentW = std::max(contentW, x - m.left);
+         }
+         contentH = y + rowH - m.top;
+-    } else {
++    } else if (b.layout != "row" && b.layout != "rl-row") {
+         for (Box &c : b.children) {
+             double dx, dy;
+             anchorOffset(c.node, c.w, c.h, &dx, &dy);
+@@ -375,7 +390,90 @@ void Layouter::measureContainer(Box &b, double availW)
+     }
+ }
+ 
+-void Layouter::measureDraw(Box &b, double availW)
++// Rows place their cells in the columns of columnWidths, other children
++// stack as in "tb". Columns of width -1, and those beyond columnWidths,
++// are as wide as their widest cell.
++void Layouter::measureTable(Box &b, double innerW)
++{
++    std::vector<double> columns;
++    const std::string spec = b.node->getAttr("columnWidths", "");
++    for (size_t i = 0; i < spec.size();) {
++        const size_t end = std::min(spec.find(' ', i), spec.size());
++        if (end > i) {
++            const double w = XFAMeasure(spec.substr(i, end - i), -1);
++            columns.push_back(w < 0 ? -1 : w);
++        }
++        i = end + 1;
++    }
++    for (const auto &c : b.node->getChildren()) {
++        if (isLayoutChild(form, c.get())) {
++            b.children.push_back(measure(c.get(), innerW));
++        }
++    }
++    auto isRow = [](const Box &c) { return c.node->getClassName() == "subform" && (c.layout == "row" || c.layout == "rl-row"); };
++    std::vector<double> natural(columns.size(), 0);
++    for (const Box &row : b.children) {
++        if (!isRow(row)) {
++            continue;
++        }
++        size_t col = 0;
++        for (const Box &cell : row.children) {
++            const int span = std::atoi(cell.node->getAttr("colSpan", "1").c_str());
++            if (col >= columns.size()) {
++                columns.push_back(-1);
++                natural.push_back(0);
++            }
++            if (span == 1) {
++                natural[col] = std::max(natural[col], cell.w);
++            }
++            col = span < 0 ? columns.size() : col + std::max(span, 1);
++        }
++    }
++    for (size_t i = 0; i < columns.size(); ++i) {
++        if (columns[i] < 0) {
++            columns[i] = natural[i];
++        }
++    }
++    for (Box &c : b.children) {
++        if (isRow(c)) {
++            tableColumns = &columns;
++            c = measure(c.node, innerW);
++        }
++    }
++}
++
++// Cells side by side, in the columns of the table if any, all as high as
++// the highest.
++void Layouter::measureRow(Box &b, double innerW, const std::vector<double> *columns, double &contentW, double &contentH)
++{
++    double x = 0;
++    size_t col = 0;
++    for (const auto &c : b.node->getChildren()) {
++        if (!isLayoutChild(form, c.get())) {
++            continue;
++        }
++        std::optional<double> cellW;
++        if (columns && col < columns->size()) {
++            const int span = std::atoi(c->getAttr("colSpan", "1").c_str());
++            const size_t end = span < 0 ? columns->size() : std::min(columns->size(), col + std::max(span, 1));
++            cellW = std::accumulate(columns->begin() + col, columns->begin() + end, 0.0);
++            col = end;
++        }
++        Box cell = measure(c.get(), innerW, cellW);
++        cell.x = x;
++        x += cell.w;
++        contentH = std::max(contentH, cell.h);
++        b.children.push_back(std::move(cell));
++    }
++    contentW = x;
++    for (Box &c : b.children) {
++        c.h = contentH;
++        c.x = b.margin.left + (b.layout == "rl-row" ? contentW - c.x - c.w : c.x);
++        c.y = b.margin.top;
++    }
++}
++
++void Layouter::measureDraw(Box &b, std::optional<double> forcedW)
+ {
+     XFANode *node = b.node;
+     const XFAInsets &m = b.margin;
+@@ -389,9 +487,9 @@ void Layouter::measureDraw(Box &b, double availW)
+     }
+     const bool isText = content && (content->getClassName() == "text" || content->getClassName() == "exData");
+ 
+-    const bool fixedW = node->getAttr("w") != nullptr;
++    const bool fixedW = forcedW || node->getAttr("w");
+     const bool fixedH = node->getAttr("h") != nullptr;
+-    double w = fixedW ? XFAMeasureAttr(node, "w") : 0;
++    double w = forcedW ? *forcedW : fixedW ? XFAMeasureAttr(node, "w") : 0;
+     std::shared_ptr<XFATextBlock> text;
+     if (isText) {
+         const XFAFont font = XFAFontOf(node);
+@@ -410,7 +508,6 @@ void Layouter::measureDraw(Box &b, double availW)
+     } else if (!fixedW) {
+         w = std::max(XFAMeasureAttr(node, "minW", 0), 0.0);
+     }
+-    (void)availW;
+     b.w = w;
+     if (fixedH) {
+         b.h = XFAMeasureAttr(node, "h");
+@@ -429,12 +526,11 @@ void Layouter::measureDraw(Box &b, double availW)
+     b.textTop = m.top;
+ }
+ 
+-void Layouter::measureField(Box &b, double availW)
++void Layouter::measureField(Box &b, std::optional<double> forcedW)
+ {
+     XFANode *node = b.node;
+     const XFAInsets &m = b.margin;
+     const XFAFont font = XFAFontOf(node);
+-    (void)availW;
+     if (node->getAttr("h")) {
+         b.h = XFAMeasureAttr(node, "h");
+     } else {
+@@ -450,7 +546,9 @@ void Layouter::measureField(Box &b, double availW)
+             b.h = std::min(b.h, XFAMeasureAttr(node, "maxH"));
+         }
+     }
+-    if (node->getAttr("w")) {
++    if (forcedW) {
++        b.w = *forcedW;
++    } else if (node->getAttr("w")) {
+         b.w = XFAMeasureAttr(node, "w");
+     } else {
+         double natural = m.left + m.right + 4;
+@@ -540,7 +638,7 @@ static Box rowsAsFlow(const Box &box)
+         } else {
+             Box row;
+             row.node = box.node;
+-            row.layout = "row";
++            row.fragmentRow = true;
+             row.x = 0;
+             row.y = box.children[i].y;
+             row.w = box.w;
+@@ -780,8 +878,7 @@ void Layouter::dropEmptyPage()
+ 
+ void Layouter::place(const Box &b, double px, double py, XFALayoutPage &lp, int pageIndex)
+ {
+-    if (b.layout == "row") {
+-        // A row of a split left-to-right container: only its children.
++    if (b.fragmentRow) {
+         for (const Box &c : b.children) {
+             place(c, px + c.x, py + c.y, lp, pageIndex);
+         }
+-- 
+2.43.0
+
