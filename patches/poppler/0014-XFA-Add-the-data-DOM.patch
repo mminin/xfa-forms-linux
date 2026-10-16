@@ -1,0 +1,788 @@
+From 199b4d86e9f0565bce9249fa337171cbdd7870ef Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 15:50:34 -0700
+Subject: [PATCH] XFA: Add the data DOM
+
+Forms keep lists of values and their own variables in xfa.datasets, and
+immigration forms fill their drop-down lists from there with bindItems.
+These lists stayed empty.
+
+The datasets packet now becomes a data DOM of dataGroup and dataValue
+nodes named by their tags, reachable from scripts as xfa.datasets,
+xfa.data, $data and $record. Scripts can create data nodes, append and
+remove them, load and save their XML, read attributes as metadata
+values and resolve SOM expressions in them. Saved forms keep the data
+DOM.
+
+Also:
+- Choice lists take their items from bindItems unless they list their
+  own.
+- Non-empty values of the initial data go into the fields they match.
+- Fields bound with match="global" share their value with all fields of
+  the same name.
+- xfa.form.remerge() rebuilds the form from the template and its data
+  once the running event is over.
+- Scripts with runAt="server" do not run, and getDeltas() exists.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c |  55 +++++++++++++
+ poppler/XFAForm.cc     | 183 +++++++++++++++++++++++++++++++++++++++--
+ poppler/XFAForm.h      |  18 ++++
+ poppler/XFANode.h      |   4 +-
+ poppler/XFAScript.cc   | 113 +++++++++++++++++++++----
+ 5 files changed, 348 insertions(+), 25 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 91192a7..790c0e7 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -587,6 +587,60 @@ static void test_scripting(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* The data DOM: initial data, items bound to data, globally bound fields
++ * and data nodes made by scripts. */
++static const char *data_xdp = "<?xml version=\"1.0\"?>\n"
++                              "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                              "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                              "<subform name=\"form1\" layout=\"tb\">"
++                              "<pageSet><pageArea name=\"Page1\">"
++                              "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                              "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/>"
++                              "</pageArea></pageSet>"
++                              "<field name=\"who\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><textEdit/></ui><value><text>nobody</text></value></field>"
++                              "<field name=\"color\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><choiceList/></ui>"
++                              "<bindItems ref=\"xfa.datasets.Lists.Color[*]\" labelRef=\"$\" valueRef=\"lic\"/><value><text>G</text></value></field>"
++                              "<subform name=\"A\" layout=\"tb\"><field name=\"sin\" w=\"3in\" h=\"0.3in\"><ui><textEdit/></ui><bind match=\"global\"/>"
++                              "<event activity=\"initialize\"><script contentType=\"application/x-javascript\">this.rawValue = \"123\";</script></event>"
++                              "</field></subform>"
++                              "<subform name=\"B\" layout=\"tb\"><field name=\"sin\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><textEdit/></ui><bind match=\"global\"/></field></subform>"
++                              "<field name=\"out\" w=\"6in\" h=\"0.3in\" access=\"nonInteractive\"><ui><textEdit/></ui>"
++                              "<event activity=\"initialize\"><script contentType=\"application/x-javascript\">"
++                              "var g = xfa.datasets.createNode(\"dataGroup\", \"vars\"); xfa.datasets.nodes.append(g);"
++                              "g.loadXML(\"&lt;v&gt;&lt;a&gt;1&lt;/a&gt;&lt;a&gt;2&lt;/a&gt;&lt;/v&gt;\", 1, 0);"
++                              "this.rawValue = [xfa.resolveNodes(\"xfa.datasets.vars.a[*]\").length, xfa.datasets.Lists.Color.lic.value, "
++                              "xfa.datasets.Lists.Color.className, xfa.data.saveXML().indexOf(\"&lt;who&gt;Ada\") &gt;= 0].join(\":\");"
++                              "</script></event></field>"
++                              "</subform>"
++                              "</template>"
++                              "<xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">"
++                              "<xfa:data><form1><who>Ada</who></form1></xfa:data>"
++                              "<Lists><Color lic=\"R\">Red</Color><Color lic=\"G\">Green</Color></Lists>"
++                              "</xfa:datasets>"
++                              "</xdp:xdp>";
++
++static void test_data(void)
++{
++    GBytes *bytes = build_pdf_from(data_xdp);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    char *text = page_text(rendered);
++    g_assert_nonnull(strstr(text, "Ada"));
++    g_assert_nonnull(strstr(text, "Green"));
++    if (!strstr(text, "123")) {
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        g_assert_nonnull(strstr(text, "2:R:dataValue:true"));
++    }
++    g_free(text);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -597,5 +651,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/table", test_table);
+     g_test_add_func("/xfa/static-values", test_static_values);
+     g_test_add_func("/xfa/scripting", test_scripting);
++    g_test_add_func("/xfa/data", test_data);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index f2b2918..6cd763f 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -248,7 +248,7 @@ void collectNamed(const XFANode *node, const std::string &name, std::vector<XFAN
+         if (c->isText()) {
+             continue;
+         }
+-        const std::string *n = c->getAttr("name");
++        const std::string *n = c->getNamespace() == XFANode::Namespace::Data ? &c->getClassName() : c->getAttr("name");
+         if (n && *n == name) {
+             out.push_back(c.get());
+         } else if (isTransparent(c.get())) {
+@@ -263,7 +263,7 @@ std::vector<XFANode *> findChildren(const XFANode *node, const SomStep &step)
+     switch (step.kind) {
+     case SomStep::Class:
+         for (const auto &c : node->getChildren()) {
+-            if (!c->isText() && c->getClassName() == step.name) {
++            if (!c->isText() && (c->getNamespace() == XFANode::Namespace::Data ? XFADataClass(c.get()) : c->getClassName()) == step.name) {
+                 res.push_back(c.get());
+             }
+         }
+@@ -347,10 +347,12 @@ const XFANode *scriptOf(const XFANode *holder)
+     return holder ? holder->firstChild("script") : nullptr;
+ }
+ 
++// Scripts for the server, such as those run when a form is rendered on
++// one, are not run by viewers.
+ std::string scriptSource(const XFANode *script, bool *runnable)
+ {
+     const std::string type = script->getAttr("contentType", "application/x-javascript");
+-    *runnable = type.find("javascript") != std::string::npos || type.find("ecmascript") != std::string::npos;
++    *runnable = (type.find("javascript") != std::string::npos || type.find("ecmascript") != std::string::npos) && script->getAttr("runAt", "client") != "server";
+     return script->textContent();
+ }
+ 
+@@ -360,6 +362,9 @@ std::string scriptSource(const XFANode *script, bool *runnable)
+ // Loading
+ //------------------------------------------------------------------------
+ 
++static void mergeData(XFAForm *form, XFANode *node, const XFANode *data, bool skipEmpty);
++static void markData(XFANode *node);
++
+ XFAForm::XFAForm() = default;
+ 
+ XFAForm::~XFAForm()
+@@ -442,6 +447,20 @@ bool XFAForm::build(PDFDoc *doc, std::string *error)
+         return false;
+     }
+ 
++    // The data DOM, from the datasets packet.
++    for (const auto &packet : xdpRoot->getChildren()) {
++        if (!packet->isText() && packet->getClassName() == "datasets" && !datasets) {
++            datasets = packet->clone(&dataDom);
++        }
++    }
++    if (!datasets) {
++        datasets = std::make_unique<XFANode>(&dataDom, "datasets");
++    }
++    if (!datasets->firstChild("data")) {
++        datasets->appendChild(std::make_unique<XFANode>(&dataDom, "data"));
++    }
++    markData(datasets.get());
++
+     // The host language decides which language bilingual forms start in.
+     const char *envs[] = { "LC_ALL", "LC_MESSAGES", "LANG" };
+     language = "en_US";
+@@ -468,6 +487,10 @@ bool XFAForm::build(PDFDoc *doc, std::string *error)
+             return false;
+         }
+         language = state->getAttr("language", language);
++        if (const XFANode *savedData = state->firstChild("datasets")) {
++            datasets = savedData->clone(&dataDom);
++            markData(datasets.get());
++        }
+         formModel = state->removeChild(model);
+         bool valid = true;
+         std::function<void(XFANode *)> restore = [&](XFANode *node) {
+@@ -501,6 +524,11 @@ bool XFAForm::build(PDFDoc *doc, std::string *error)
+     } else {
+         formModel = std::make_unique<XFANode>(&formDom, "form");
+         formRoot = formModel->appendChild(instantiate(rootSubform));
++        for (const XFANode *record : getDataRoot()->elementChildren()) {
++            if (record->getClassName() == rootSubform->getName()) {
++                mergeData(this, formRoot, record, true);
++            }
++        }
+     }
+ 
+     script = std::make_unique<XFAScript>(this);
+@@ -583,6 +611,10 @@ std::vector<XFANode *> XFAForm::resolve(XFANode *context, const std::string &som
+             current.push_back(formModel.get());
+         } else if (model == "template") {
+             current.push_back(templateNode);
++        } else if (model == "datasets") {
++            current.push_back(datasets.get());
++        } else if (model == "data") {
++            current.push_back(getDataRoot());
+         } else {
+             return {};
+         }
+@@ -593,6 +625,16 @@ std::vector<XFANode *> XFAForm::resolve(XFANode *context, const std::string &som
+     } else if (first.kind == SomStep::Name && first.name == "$template") {
+         current.push_back(templateNode);
+         i = 1;
++    } else if (first.kind == SomStep::Name && first.name == "$data") {
++        current.push_back(getDataRoot());
++        i = 1;
++    } else if (first.kind == SomStep::Name && first.name == "$record") {
++        const std::vector<XFANode *> records = getDataRoot()->elementChildren();
++        if (records.empty()) {
++            return {};
++        }
++        current.push_back(records.front());
++        i = 1;
+     } else if (first.kind == SomStep::Name && first.name == "$") {
+         current.push_back(context);
+         i = 1;
+@@ -936,8 +978,36 @@ void XFAForm::deleteItem(XFANode *field, int index)
+     nodeChanged(field);
+ }
+ 
++// A label or value of an item bound with bindItems: "$" is the data
++// node's value, other names its child or attribute.
++static std::string boundItemPart(const XFANode *data, const std::string &ref)
++{
++    if (ref.empty() || ref == "$") {
++        return data->textContent();
++    }
++    for (XFANode *c : data->elementChildren()) {
++        if (c->getClassName() == ref) {
++            return c->textContent();
++        }
++    }
++    return data->getAttr(ref, "");
++}
++
+ std::vector<std::string> XFAForm::getItems(XFANode *field, bool saveValues) const
+ {
++    // Items bound to data, unless the field lists its own.
++    if (const XFANode *bind = field->firstChild("bindItems")) {
++        XFANode *display, *save;
++        itemLists(field, &display, &save);
++        if ((!display || display->elementChildren().empty()) && (!save || save->elementChildren().empty())) {
++            const std::string ref = bind->getAttr(saveValues ? "valueRef" : "labelRef", "$");
++            std::vector<std::string> res;
++            for (const XFANode *d : resolve(field, bind->getAttr("ref", ""), true)) {
++                res.push_back(boundItemPart(d, ref));
++            }
++            return res;
++        }
++    }
+     const std::vector<XFANode *> lists = field->childrenOfClass("items");
+     const XFANode *display = nullptr, *save = nullptr;
+     for (const XFANode *l : lists) {
+@@ -984,6 +1054,10 @@ static XFANode *valueContent(XFANode *node, bool create)
+ 
+ std::optional<std::string> XFAForm::getRawValue(XFANode *node) const
+ {
++    if (node->getNamespace() == XFANode::Namespace::Data) {
++        std::string text = node->textContent();
++        return text.empty() ? std::nullopt : std::optional<std::string>(text);
++    }
+     const std::string &cls = node->getClassName();
+     if (cls == "exclGroup") {
+         for (XFANode *c : node->childrenOfClass("field")) {
+@@ -1010,8 +1084,18 @@ std::optional<std::string> XFAForm::getRawValue(XFANode *node) const
+     return text;
+ }
+ 
++static bool isGlobal(const XFANode *field)
++{
++    const XFANode *bind = field->firstChild("bind");
++    return bind && bind->getAttr("match", "") == "global";
++}
++
+ void XFAForm::setRawValue(XFANode *node, const std::optional<std::string> &value)
+ {
++    if (node->getNamespace() == XFANode::Namespace::Data) {
++        node->setTextContent(value.value_or(""));
++        return;
++    }
+     const std::string &cls = node->getClassName();
+     if (cls == "exclGroup") {
+         for (XFANode *c : node->childrenOfClass("field")) {
+@@ -1042,6 +1126,20 @@ void XFAForm::setRawValue(XFANode *node, const std::optional<std::string> &value
+     }
+     content->setTextContent(newText);
+     nodeChanged(node);
++
++    // Fields bound globally share their value with all fields of that name.
++    if (cls == "field" && !settingGlobal && isGlobal(node) && formRoot) {
++        settingGlobal = true;
++        std::vector<int> serials;
++        preorder(formRoot, serials);
++        for (int serial : serials) {
++            XFANode *n = formDom.lookup(serial);
++            if (n && n != node && n->getClassName() == "field" && n->getName() == node->getName() && isGlobal(n)) {
++                setRawValue(n, value);
++            }
++        }
++        settingGlobal = false;
++    }
+ }
+ 
+ std::string XFAForm::getFormattedValue(XFANode *node) const
+@@ -1488,7 +1586,9 @@ void XFAForm::loadData(const std::string &xml, bool ignoreRoot, bool /*overwrite
+     }
+ }
+ 
+-static void mergeData(XFAForm *form, XFANode *node, const XFANode *data)
++// Values of matching names in data go into the fields of node. With
++// skipEmpty, empty data values leave the fields' default values.
++static void mergeData(XFAForm *form, XFANode *node, const XFANode *data, bool skipEmpty)
+ {
+     std::map<std::string, int> seen;
+     for (const auto &c : node->getChildren()) {
+@@ -1497,7 +1597,7 @@ static void mergeData(XFAForm *form, XFANode *node, const XFANode *data)
+         }
+         const std::string name = c->getName();
+         if (name.empty()) {
+-            mergeData(form, c.get(), data);
++            mergeData(form, c.get(), data, skipEmpty);
+             continue;
+         }
+         const int index = seen[name]++;
+@@ -1514,9 +1614,11 @@ static void mergeData(XFAForm *form, XFANode *node, const XFANode *data)
+         }
+         if (c->getClassName() == "field" || c->getClassName() == "exclGroup") {
+             const std::string v = match->textContent();
+-            form->setRawValue(c.get(), v.empty() ? std::nullopt : std::optional<std::string>(v));
++            if (!v.empty() || !skipEmpty) {
++                form->setRawValue(c.get(), v.empty() ? std::nullopt : std::optional<std::string>(v));
++            }
+         } else {
+-            mergeData(form, c.get(), match);
++            mergeData(form, c.get(), match, skipEmpty);
+         }
+     }
+ }
+@@ -1537,7 +1639,65 @@ void XFAForm::applyPendingData(XFANode *node)
+     }
+     // With the root ignored, the data holds the children of the subform
+     // it was saved from, which may have had another name.
+-    mergeData(this, node, match ? match : data.get());
++    mergeData(this, node, match ? match : data.get(), false);
++}
++
++static void markData(XFANode *node)
++{
++    node->setNamespace(XFANode::Namespace::Data);
++    for (const auto &c : node->getChildren()) {
++        markData(c.get());
++    }
++}
++
++const char *XFADataClass(const XFANode *node)
++{
++    const std::string kind = node->getAttr("xfa:dataNode", "");
++    if (kind == "dataGroup" || kind == "dataValue") {
++        return kind == "dataGroup" ? "dataGroup" : "dataValue";
++    }
++    return node->elementChildren().empty() ? "dataValue" : "dataGroup";
++}
++
++void XFAForm::loadDataXML(XFANode *dataNode, const std::string &xml, bool ignoreRoot, bool overwrite)
++{
++    std::string error;
++    std::unique_ptr<XFANode> root = XFAParseXML(xml, &dataDom, &error);
++    if (!root) {
++        logMessage("loadXML: " + error);
++        return;
++    }
++    markData(root.get());
++    if (overwrite) {
++        while (!dataNode->getChildren().empty()) {
++            dataNode->removeChild(dataNode->getChildren().back().get());
++        }
++    }
++    if (!ignoreRoot) {
++        dataNode->appendChild(std::move(root));
++        return;
++    }
++    while (!root->getChildren().empty()) {
++        dataNode->appendChild(root->removeChild(root->getChildren().front().get()));
++    }
++}
++
++void XFAForm::doRemerge()
++{
++    remergePending = false;
++    std::string error;
++    std::unique_ptr<XFANode> data = XFAParseXML(saveData(formRoot), &formDom, &error);
++    pageSetInstance = nullptr;
++    std::unique_ptr<XFANode> root = instantiate(formRoot->getProto());
++    retiredRoot = formModel->removeChild(formRoot);
++    formRoot = formModel->appendChild(std::move(root));
++    if (data) {
++        mergeData(this, formRoot, data.get(), false);
++    }
++    script->defineScriptObjects(formRoot);
++    invalidateLayout();
++    initializeSubtree(formRoot);
++    runCalculations();
+ }
+ 
+ //------------------------------------------------------------------------
+@@ -1570,6 +1730,10 @@ XFAForm::VisibleState XFAForm::visibleState()
+ 
+ bool XFAForm::afterChange(XFANode *editedField, const std::optional<std::string> &shownValue)
+ {
++    if (remergePending) {
++        doRemerge();
++        editedField = nullptr;
++    }
+     if (editedField) {
+         for (auto &v : shownState.values) {
+             if (v.first == editedField->getSerial()) {
+@@ -1617,7 +1781,8 @@ std::string XFAForm::saveState() const
+         }
+         return xml + "</" + node->getClassName() + ">";
+     };
+-    return "<state version=\"1\" language=\"" + XFAEscapeXML(language) + "\" xmlns:poppler=\"https://poppler.freedesktop.org/xfa-state/1\" xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">" + serialize(formModel.get()) + "</state>";
++    return "<state version=\"1\" language=\"" + XFAEscapeXML(language) + "\" xmlns:poppler=\"https://poppler.freedesktop.org/xfa-state/1\" xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">" + serialize(formModel.get())
++            + datasets->toXML() + "</state>";
+ }
+ 
+ std::string XFAForm::generateSavedPDF()
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index dc19db5..e31dc99 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -99,6 +99,15 @@ public:
+     XFANode *getTemplate() const { return templateNode; }
+     XFANode *lookupNode(int serial) const { return formDom.lookup(serial); }
+     XFADom *getFormDom() { return &formDom; }
++    // The data DOM: <datasets>, holding <data> and anything scripts add.
++    XFANode *getDatasets() const { return datasets.get(); }
++    XFANode *getDataRoot() const { return datasets->firstChild("data"); }
++    XFADom *getDataDom() { return &dataDom; }
++    // Loads XML into a data node, as dataNode.loadXML() does.
++    void loadDataXML(XFANode *dataNode, const std::string &xml, bool ignoreRoot, bool overwrite);
++    // Rebuilds the form from the template and the current data, once the
++    // running event is over.
++    void remerge() { remergePending = true; }
+     const std::string &getLanguage() const { return language; }
+ 
+     // SOM resolution. When implicit is true, the first name of the
+@@ -208,9 +217,13 @@ private:
+     void collectFieldValues(XFANode *node, std::vector<std::pair<int, std::string>> &values) const;
+     XFANode *fieldByName(const std::string &fieldName) const;
+     void fireEnterEvents(XFANode *node);
++    void doRemerge();
+ 
+     XFADom templateDom;
+     XFADom formDom;
++    XFADom dataDom;
++    std::unique_ptr<XFANode> datasets;
++    std::unique_ptr<XFANode> retiredRoot; // replaced by remerge, scripts may still refer to it
+     std::unique_ptr<XFANode> xdpRoot; // the whole XDP document
+     XFANode *templateNode = nullptr; // <template>
+     std::unique_ptr<XFANode> formModel; // <form>, holding the root subform
+@@ -228,6 +241,8 @@ private:
+     int calcDepth = 0;
+     bool inLayout = false;
+     bool layoutDirty = false;
++    bool remergePending = false;
++    bool settingGlobal = false;
+ };
+ 
+ // Locale independent number parsing: "1.5" whatever LC_NUMERIC says.
+@@ -244,4 +259,7 @@ struct XFAColor
+ };
+ XFAColor XFAParseColor(const std::string &value, XFAColor def = {});
+ 
++// "dataGroup" or "dataValue", the class of a node of the data DOM.
++const char *XFADataClass(const XFANode *node);
++
+ #endif
+diff --git a/poppler/XFANode.h b/poppler/XFANode.h
+index 0190e65..d2c8ac1 100644
+--- a/poppler/XFANode.h
++++ b/poppler/XFANode.h
+@@ -49,7 +49,9 @@ public:
+     {
+         XFA,
+         XHTML,
+-        Other
++        Other,
++        // Elements of the data DOM, named by their tags.
++        Data
+     };
+ 
+     XFANode(XFADom *dom, std::string className);
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 05fb70b..3d10291 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -4,7 +4,8 @@
+ //
+ // The XFA scripting object model is written in JavaScript (see the prelude
+ // below) on top of a small set of native functions working on node ids.
+-// Form nodes have positive ids, template nodes negative ones.
++// Form nodes have positive ids, template nodes negative ones, data nodes
++// ids from dataIdBase on.
+ //
+ // This file is licensed under the GPLv2 or later
+ //
+@@ -31,7 +32,7 @@ const char *const prelude = R"JS(
+ (function (g) {
+ var N = g.__xfa;
+ var cache = new Map();
+-var TEXT_LIKE = { text: 1, integer: 1, decimal: 1, float: 1, date: 1, time: 1, dateTime: 1, boolean: 1, exData: 1, toolTip: 1, speak: 1, script: 1, image: 1 };
++var TEXT_LIKE = { text: 1, integer: 1, decimal: 1, float: 1, date: 1, time: 1, dateTime: 1, boolean: 1, exData: 1, toolTip: 1, speak: 1, script: 1, image: 1, dataValue: 1, dataGroup: 1 };
+ var CONTAINERS = { subform: 1, field: 1, draw: 1, exclGroup: 1, subformSet: 1, area: 1, pageArea: 1, pageSet: 1, contentArea: 1 };
+ var DEFAULT_PROPS = { border: 1, assist: 1, font: 1, para: 1, margin: 1, caption: 1, ui: 1, validate: 1, value: 1, desc: 1, extras: 1, fill: 1, toolTip: 1 };
+ // Properties of non-container objects that exist by default, created on first use.
+@@ -53,6 +54,16 @@ function addProperty(id, name) {
+     return c;
+ }
+ 
++// Attributes of data elements read as dataValues of contains="metaData".
++function metaData(id, name) {
++    return {
++        get value() { var v = N.attr(id, name); return v === null ? "" : v; },
++        set value(v) { N.setAttr(id, name, String(v)); },
++        get isNull() { return N.attr(id, name) === null; },
++        name: name, className: "dataValue", contains: "metaData"
++    };
++}
++
+ function colorOf(w, path) {
+     for (var i = 0; i < path.length && w; i++) w = w[path[i]];
+     return w ? w.value : "";
+@@ -128,6 +139,9 @@ var methods = {
+     setAttribute: function (id, v, name) { N.setAttr(id, String(name), String(v)); },
+     createNode: function (id, cls, name) { return wrap(N.createNode(String(cls), name === undefined ? "" : String(name))); },
+     saveXML: function (id) { return N.saveXML(id); },
++    loadXML: function (id, xml, ignoreRoot, overwrite) { N.loadDataXML(id, String(xml), !!ignoreRoot, !!overwrite); },
++    remerge: function () { N.remerge(); },
++    getDeltas: function () { return staticList([]); },
+     toString: function (id) { var v = N.rawValue(id); return v === null ? "" : v; },
+     clearItems: function (id) { N.clearItems(id); },
+     addItem: function (id, display, save) { N.addItem(id, String(display), save === undefined || save === null ? null : String(save)); },
+@@ -215,6 +229,7 @@ var handler = {
+         if (c !== null) return wrap(c);
+         var v = N.variable(id, prop, false);
+         if (v !== null) return wrap(v);
++        if (cls === "dataValue" || cls === "dataGroup") return N.attr(id, prop) !== null ? metaData(id, prop) : undefined;
+         var a = N.attr(id, prop);
+         if (a !== null) return a;
+         if (CONTAINERS[cls] ? DEFAULT_PROPS[prop] : OBJECT_PROPS[cls] && OBJECT_PROPS[cls][prop]) return wrap(addProperty(id, prop));
+@@ -418,8 +433,8 @@ var xfa = {
+     get form() { return wrap(N.formModel()); },
+     get template() { return wrap(N.templateRoot()); }
+ };
+-xfa.datasets = { data: xfa.record };
+-xfa.data = xfa.record;
++Object.defineProperty(xfa, "datasets", { get: function () { return wrap(N.datasets()); } });
++Object.defineProperty(xfa, "data", { get: function () { return wrap(N.dataRoot()); } });
+ 
+ var app = {
+     viewerType: "Reader", viewerVersion: 11, viewerVariation: "Reader", platform: "UNIX", language: "ENU", runtimeHighlight: false,
+@@ -549,6 +564,7 @@ struct XFAScript::Private
+     JSRuntime *rt = nullptr;
+     JSContext *ctx = nullptr;
+     std::unique_ptr<XFANode> limbo; // nodes made by createNode, not yet attached
++    std::unique_ptr<XFANode> dataLimbo; // the same for data nodes
+     std::chrono::steady_clock::time_point deadline;
+     bool ok = false;
+ };
+@@ -565,14 +581,25 @@ XFAForm *formOf(JSContext *ctx)
+     return priv(ctx)->form;
+ }
+ 
++constexpr int dataIdBase = 1 << 30;
++
+ int idOfNode(XFAForm *form, const XFANode *n)
+ {
+     if (!n) {
+         return 0;
+     }
++    if (n->getDom() == form->getDataDom()) {
++        return dataIdBase + n->getSerial();
++    }
+     return n->getDom() == form->getFormDom() ? n->getSerial() : -n->getSerial();
+ }
+ 
++// Scripts change the form and data DOMs, not the template.
++bool writable(XFAForm *form, const XFANode *n)
++{
++    return n && (n->getDom() == form->getFormDom() || n->getDom() == form->getDataDom());
++}
++
+ XFANode *nodeArg(JSContext *ctx, JSValueConst v)
+ {
+     if (JS_IsNull(v) || JS_IsUndefined(v)) {
+@@ -583,6 +610,9 @@ XFANode *nodeArg(JSContext *ctx, JSValueConst v)
+         return nullptr;
+     }
+     XFAForm *form = formOf(ctx);
++    if (id >= dataIdBase) {
++        return form->getDataDom()->lookup(id - dataIdBase);
++    }
+     return id > 0 ? form->lookupNode(id) : form->lookupTemplateNode(-id);
+ }
+ 
+@@ -665,12 +695,18 @@ NATIVE(alive)
+ NATIVE(cls)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
++    if (n && n->getNamespace() == XFANode::Namespace::Data) {
++        return strValue(ctx, XFADataClass(n));
++    }
+     return n ? strValue(ctx, n->getClassName()) : JS_NULL;
+ }
+ 
+ NATIVE(name)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
++    if (n && n->getNamespace() == XFANode::Namespace::Data) {
++        return strValue(ctx, n->getClassName());
++    }
+     return n ? strValue(ctx, n->getName()) : JS_NULL;
+ }
+ 
+@@ -684,7 +720,7 @@ NATIVE(attr)
+ NATIVE(setAttr)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
+-    if (n && n->getDom() == formOf(ctx)->getFormDom()) {
++    if (writable(formOf(ctx), n)) {
+         const std::string name = strArg(ctx, ARG(1));
+         const std::string value = strArg(ctx, ARG(2));
+         const std::string *old = n->getAttr(name);
+@@ -717,10 +753,12 @@ NATIVE(childrenOfClass)
+ NATIVE(addChild)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
+-    if (!n || n->getDom() != formOf(ctx)->getFormDom()) {
++    if (!writable(formOf(ctx), n)) {
+         return JS_NULL;
+     }
+-    return idValue(ctx, n->appendChild(std::make_unique<XFANode>(n->getDom(), strArg(ctx, ARG(1)))));
++    XFANode *c = n->appendChild(std::make_unique<XFANode>(n->getDom(), strArg(ctx, ARG(1))));
++    c->setNamespace(n->getNamespace());
++    return idValue(ctx, c);
+ }
+ 
+ NATIVE(child)
+@@ -751,7 +789,7 @@ NATIVE(text)
+ NATIVE(setText)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
+-    if (n && n->getDom() == formOf(ctx)->getFormDom()) {
++    if (writable(formOf(ctx), n)) {
+         const std::string value = strArg(ctx, ARG(1));
+         if (n->textContent() != value) {
+             n->setTextContent(value);
+@@ -944,7 +982,7 @@ NATIVE(rawValue)
+ NATIVE(setRawValue)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
+-    if (n && n->getDom() == formOf(ctx)->getFormDom()) {
++    if (writable(formOf(ctx), n)) {
+         JSValueConst v = ARG(1);
+         if (JS_IsNull(v) || JS_IsUndefined(v)) {
+             formOf(ctx)->setRawValue(n, std::nullopt);
+@@ -1026,8 +1064,16 @@ NATIVE(resetData)
+ 
+ NATIVE(saveXML)
+ {
++    XFAForm *form = formOf(ctx);
+     XFANode *n = nodeArg(ctx, ARG(0));
+-    return n ? strValue(ctx, formOf(ctx)->saveData(n)) : strValue(ctx, "");
++    if (!n) {
++        return strValue(ctx, "");
++    }
++    // The values of the form are bound to the data root.
++    if (n == form->getDataRoot()) {
++        return strValue(ctx, "<xfa:data xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">" + form->saveData(form->getFormRoot()) + "</xfa:data>");
++    }
++    return strValue(ctx, n->getNamespace() == XFANode::Namespace::Data ? n->toXML() : form->saveData(n));
+ }
+ 
+ NATIVE(loadXML)
+@@ -1039,11 +1085,12 @@ NATIVE(loadXML)
+ NATIVE(removeNode)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
+-    if (n && n->getParent() && n->getDom() == formOf(ctx)->getFormDom()) {
++    if (n && n->getParent() && writable(formOf(ctx), n)) {
+         XFAForm *form = formOf(ctx);
+         XFANode *parent = n->getParent();
+         // Keep the node alive in limbo: scripts may append it elsewhere.
+-        priv(ctx)->limbo->appendChild(parent->removeChild(n));
++        XFANode *limbo = n->getDom() == form->getDataDom() ? priv(ctx)->dataLimbo.get() : priv(ctx)->limbo.get();
++        limbo->appendChild(parent->removeChild(n));
+         form->nodeChanged(parent);
+     }
+     return JS_UNDEFINED;
+@@ -1053,7 +1100,7 @@ NATIVE(appendNode)
+ {
+     XFANode *parent = nodeArg(ctx, ARG(0));
+     XFANode *n = nodeArg(ctx, ARG(1));
+-    if (parent && n && n->getParent() && parent->getDom() == formOf(ctx)->getFormDom() && n->getDom() == parent->getDom()) {
++    if (parent && n && n->getParent() && writable(formOf(ctx), parent) && n->getDom() == parent->getDom()) {
+         parent->appendChild(n->getParent()->removeChild(n));
+         formOf(ctx)->nodeChanged(parent);
+     }
+@@ -1063,14 +1110,47 @@ NATIVE(appendNode)
+ NATIVE(createNode)
+ {
+     XFAScript::Private *p = priv(ctx);
+-    XFANode *n = p->limbo->appendChild(std::make_unique<XFANode>(p->form->getFormDom(), strArg(ctx, ARG(0))));
++    const std::string cls = strArg(ctx, ARG(0));
+     const std::string name = strArg(ctx, ARG(1));
++    if (cls == "dataGroup" || cls == "dataValue") {
++        // Data nodes are elements named by their tag.
++        XFANode *n = p->dataLimbo->appendChild(std::make_unique<XFANode>(p->form->getDataDom(), name.empty() ? cls : name));
++        n->setNamespace(XFANode::Namespace::Data);
++        n->setAttr("xfa:dataNode", cls);
++        return idValue(ctx, n);
++    }
++    XFANode *n = p->limbo->appendChild(std::make_unique<XFANode>(p->form->getFormDom(), cls));
+     if (!name.empty()) {
+         n->setAttr("name", name);
+     }
+     return idValue(ctx, n);
+ }
+ 
++NATIVE(loadDataXML)
++{
++    XFANode *n = nodeArg(ctx, ARG(0));
++    if (n && n->getNamespace() == XFANode::Namespace::Data) {
++        formOf(ctx)->loadDataXML(n, strArg(ctx, ARG(1)), JS_ToBool(ctx, ARG(2)) == 1, JS_ToBool(ctx, ARG(3)) == 1);
++    }
++    return JS_UNDEFINED;
++}
++
++NATIVE(remerge)
++{
++    formOf(ctx)->remerge();
++    return JS_UNDEFINED;
++}
++
++NATIVE(datasets)
++{
++    return idValue(ctx, formOf(ctx)->getDatasets());
++}
++
++NATIVE(dataRoot)
++{
++    return idValue(ctx, formOf(ctx)->getDataRoot());
++}
++
+ NATIVE(execValidate)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
+@@ -1128,7 +1208,8 @@ const NativeEntry natives[] = { ENTRY(alive, 1),        ENTRY(cls, 1),         E
+                                 ENTRY(rawValue, 1),     ENTRY(setRawValue, 2), ENTRY(formattedValue, 1), ENTRY(items, 2),     ENTRY(pageOf, 1),     ENTRY(pageCount, 0), ENTRY(pageContent, 3),   ENTRY(relayout, 0),
+                                 ENTRY(message, 2),      ENTRY(launchURL, 1),   ENTRY(print, 2),          ENTRY(language, 0),  ENTRY(resetData, 1),  ENTRY(saveXML, 1),   ENTRY(loadXML, 3),       ENTRY(removeNode, 1),
+                                 ENTRY(appendNode, 2),   ENTRY(createNode, 2),  ENTRY(execValidate, 1),   ENTRY(fireEvent, 2), ENTRY(runCalcs, 0),   ENTRY(log, 1),       ENTRY(som, 1),           ENTRY(formModel, 0),
+-                                ENTRY(templateRoot, 0), ENTRY(variable, 3),    ENTRY(clearItems, 1),     ENTRY(addItem, 3),   ENTRY(deleteItem, 2), ENTRY(imMove, 4) };
++                                ENTRY(templateRoot, 0), ENTRY(variable, 3),    ENTRY(clearItems, 1),     ENTRY(addItem, 3),   ENTRY(deleteItem, 2), ENTRY(imMove, 4),    ENTRY(loadDataXML, 4),   ENTRY(remerge, 0),
++                                ENTRY(datasets, 0),     ENTRY(dataRoot, 0) };
+ 
+ int interruptHandler(JSContext *, void *opaque)
+ {
+@@ -1157,6 +1238,8 @@ XFAScript::XFAScript(XFAForm *form) : d(std::make_unique<Private>())
+ {
+     d->form = form;
+     d->limbo = std::make_unique<XFANode>(form->getFormDom(), "limbo");
++    d->dataLimbo = std::make_unique<XFANode>(form->getDataDom(), "limbo");
++    d->dataLimbo->setNamespace(XFANode::Namespace::Data);
+     d->rt = JS_NewRuntime();
+     if (!d->rt) {
+         return;
+-- 
+2.43.0
+
