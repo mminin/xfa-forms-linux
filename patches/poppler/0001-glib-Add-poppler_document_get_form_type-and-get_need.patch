@@ -1,0 +1,230 @@
+From 567281834ea050349b82d957bdf07f6dbf6d142b Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 13:53:39 -0700
+Subject: [PATCH 1/9] glib: Add poppler_document_get_form_type() and
+ get_needs_rendering()
+
+Expose Catalog::getFormType() to glib users, as the Qt6 frontend already
+does with Document::formType(), and add Catalog::getNeedsRendering() for
+the catalog's NeedsRendering entry.
+
+Together they let viewers recognise dynamic XFA forms. Poppler can't
+render those, so their pages only show a "requires Adobe Reader" stub,
+and viewers can now tell the user why instead of showing it silently.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/poppler-document.cc            | 60 +++++++++++++++++++++++++++++
+ glib/poppler-document.h             | 22 +++++++++++
+ glib/reference/poppler-sections.txt |  5 +++
+ glib/reference/poppler.types        |  1 +
+ poppler/Catalog.cc                  | 11 ++++++
+ poppler/Catalog.h                   |  3 ++
+ 6 files changed, 102 insertions(+)
+
+diff --git a/glib/poppler-document.cc b/glib/poppler-document.cc
+index e4184b1..d2635db 100644
+--- a/glib/poppler-document.cc
++++ b/glib/poppler-document.cc
+@@ -2213,6 +2213,66 @@ void poppler_document_reset_form(PopplerDocument *document, GList *fields, gbool
+     }
+ }
+ 
++/**
++ * poppler_document_get_form_type:
++ * @document: A #PopplerDocument
++ *
++ * Returns which interactive form technology @document uses.
++ *
++ * Return value: a #PopplerFormType
++ *
++ * Since: 26.11
++ **/
++PopplerFormType poppler_document_get_form_type(PopplerDocument *document)
++{
++    Catalog *catalog;
++
++    g_return_val_if_fail(POPPLER_IS_DOCUMENT(document), POPPLER_FORM_TYPE_NONE);
++
++    catalog = document->doc->getCatalog();
++    if (!catalog || !catalog->isOk()) {
++        return POPPLER_FORM_TYPE_NONE;
++    }
++
++    switch (catalog->getFormType()) {
++    case Catalog::NoForm:
++        return POPPLER_FORM_TYPE_NONE;
++    case Catalog::AcroForm:
++        return POPPLER_FORM_TYPE_ACROFORM;
++    case Catalog::XfaForm:
++        return POPPLER_FORM_TYPE_XFA;
++    }
++
++    return POPPLER_FORM_TYPE_NONE;
++}
++
++/**
++ * poppler_document_get_needs_rendering:
++ * @document: A #PopplerDocument
++ *
++ * Returns the value of the NeedsRendering entry of the document catalog.
++ * It is %TRUE for dynamic XFA forms, whose pages are generated from the XFA
++ * template by the viewer. Poppler does not do that, so the pages it renders
++ * for such documents usually only hold a "please use Adobe Reader" message.
++ *
++ * Return value: %TRUE if the document needs its pages generated from XFA
++ *
++ * Since: 26.11
++ **/
++gboolean poppler_document_get_needs_rendering(PopplerDocument *document)
++{
++    Catalog *catalog;
++
++    g_return_val_if_fail(POPPLER_IS_DOCUMENT(document), FALSE);
++
++    catalog = document->doc->getCatalog();
++    if (!catalog || !catalog->isOk()) {
++        return FALSE;
++    }
++
++    return catalog->getNeedsRendering();
++}
++
+ /**
+  * poppler_document_has_javascript:
+  * @document: A #PopplerDocument
+diff --git a/glib/poppler-document.h b/glib/poppler-document.h
+index 65c0c97..2426ed4 100644
+--- a/glib/poppler-document.h
++++ b/glib/poppler-document.h
+@@ -291,6 +291,24 @@ typedef enum
+     POPPLER_PDF_SUBTYPE_CONF_NONE
+ } PopplerPDFConformance;
+ 
++/**
++ * PopplerFormType:
++ * @POPPLER_FORM_TYPE_NONE: the document has no interactive form
++ * @POPPLER_FORM_TYPE_ACROFORM: the document has an AcroForm
++ * @POPPLER_FORM_TYPE_XFA: the document has an XFA form. Only its AcroForm
++ *   fallback, if any, is rendered; see poppler_document_get_needs_rendering()
++ *
++ * Interactive form technology used by a document
++ *
++ * Since: 26.11
++ */
++typedef enum
++{
++    POPPLER_FORM_TYPE_NONE,
++    POPPLER_FORM_TYPE_ACROFORM,
++    POPPLER_FORM_TYPE_XFA
++} PopplerFormType;
++
+ /**
+  * PopplerDocument:
+  *
+@@ -423,6 +441,10 @@ PopplerFormField *poppler_document_get_form_field(PopplerDocument *document, gin
+ 
+ POPPLER_PUBLIC
+ void poppler_document_reset_form(PopplerDocument *document, GList *fields, gboolean exclude_fields);
++POPPLER_PUBLIC
++PopplerFormType poppler_document_get_form_type(PopplerDocument *document);
++POPPLER_PUBLIC
++gboolean poppler_document_get_needs_rendering(PopplerDocument *document);
+ /* Javascript */
+ POPPLER_PUBLIC
+ gboolean poppler_document_has_javascript(PopplerDocument *document);
+diff --git a/glib/reference/poppler-sections.txt b/glib/reference/poppler-sections.txt
+index 31994cf..fe7d7b4 100644
+--- a/glib/reference/poppler-sections.txt
++++ b/glib/reference/poppler-sections.txt
+@@ -147,6 +147,7 @@ PopplerDocument
+ PopplerFontInfo
+ PopplerFontType
+ PopplerFontsIter
++PopplerFormType
+ PopplerIndexIter
+ PopplerLayersIter
+ PopplerPDFConformance
+@@ -168,6 +169,7 @@ poppler_document_get_creation_date
+ poppler_document_get_creation_date_time
+ poppler_document_get_creator
+ poppler_document_get_form_field
++poppler_document_get_form_type
+ poppler_document_get_id
+ poppler_document_get_keywords
+ poppler_document_get_metadata
+@@ -176,6 +178,7 @@ poppler_document_get_modification_date_time
+ poppler_document_get_n_attachments
+ poppler_document_get_n_pages
+ poppler_document_get_n_signatures
++poppler_document_get_needs_rendering
+ poppler_document_get_page
+ poppler_document_get_page_by_label
+ poppler_document_get_page_layout
+@@ -263,6 +266,7 @@ POPPLER_TYPE_DOCUMENT
+ POPPLER_TYPE_FONTS_ITER
+ POPPLER_TYPE_FONT_INFO
+ POPPLER_TYPE_FONT_TYPE
++POPPLER_TYPE_FORM_TYPE
+ POPPLER_TYPE_INDEX_ITER
+ POPPLER_TYPE_LAYER
+ POPPLER_TYPE_LAYERS_ITER
+@@ -280,6 +284,7 @@ poppler_document_get_type
+ poppler_font_info_get_type
+ poppler_font_type_get_type
+ poppler_fonts_iter_get_type
++poppler_form_type_get_type
+ poppler_index_iter_get_type
+ poppler_layers_iter_get_type
+ poppler_page_layout_get_type
+diff --git a/glib/reference/poppler.types b/glib/reference/poppler.types
+index c97ad17..7f3c736 100644
+--- a/glib/reference/poppler.types
++++ b/glib/reference/poppler.types
+@@ -42,6 +42,7 @@ poppler_form_field_get_type
+ poppler_form_field_mapping_get_type
+ poppler_form_field_type_get_type
+ poppler_form_text_type_get_type
++poppler_form_type_get_type
+ poppler_image_mapping_get_type
+ poppler_index_iter_get_type
+ poppler_layer_get_type
+diff --git a/poppler/Catalog.cc b/poppler/Catalog.cc
+index 049958b..e909ba6 100644
+--- a/poppler/Catalog.cc
++++ b/poppler/Catalog.cc
+@@ -1083,6 +1083,17 @@ Catalog::FormType Catalog::getFormType()
+     return res;
+ }
+ 
++bool Catalog::getNeedsRendering()
++{
++    Object catDict = xref->getCatalog();
++    if (!catDict.isDict()) {
++        return false;
++    }
++
++    Object obj = catDict.dictLookup("NeedsRendering");
++    return obj.isBool() && obj.getBool();
++}
++
+ Form *Catalog::getCreateForm()
+ {
+     catalogLocker();
+diff --git a/poppler/Catalog.h b/poppler/Catalog.h
+index 26d7ff5..c8f5770 100644
+--- a/poppler/Catalog.h
++++ b/poppler/Catalog.h
+@@ -226,6 +226,9 @@ public:
+     };
+ 
+     FormType getFormType();
++    // Value of the catalog's NeedsRendering entry: true when the document is a
++    // dynamic XFA form whose pages have to be generated from the XFA template.
++    bool getNeedsRendering();
+     // This can return nullptr if the document is in a very damaged state
+     Form *getCreateForm();
+     Form *getForm();
+-- 
+2.43.0
+

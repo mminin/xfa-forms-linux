@@ -1,0 +1,10 @@
+upstream/
+_build/
+_install/
+_work/
+__pycache__/
+samples/*.pdf
+tools/headless/data/
+tools/headless/config/
+tools/headless/cache/
+tools/headless/bus

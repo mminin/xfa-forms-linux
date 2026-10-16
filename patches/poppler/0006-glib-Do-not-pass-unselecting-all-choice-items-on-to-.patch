@@ -1,0 +1,36 @@
+From 7478941697971ef2e94f1330577032ce9da35709 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 15:08:58 -0700
+Subject: [PATCH 6/9] glib: Do not pass unselecting all choice items on to XFA
+ forms
+
+Viewers unselect all items before selecting the new one; the form would
+see an empty value in between and run its scripts for it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/poppler-form-field.cc | 7 ++-----
+ 1 file changed, 2 insertions(+), 5 deletions(-)
+
+diff --git a/glib/poppler-form-field.cc b/glib/poppler-form-field.cc
+index 6332ef8..422abba 100644
+--- a/glib/poppler-form-field.cc
++++ b/glib/poppler-form-field.cc
+@@ -1083,12 +1083,9 @@ void poppler_form_field_choice_unselect_all(PopplerFormField *field)
+ {
+     g_return_if_fail(field->widget->getType() == formChoice);
+ 
++    // Not passed on to XFA forms: viewers unselect all before selecting
++    // the new item, and the form would see an empty value in between.
+     static_cast<FormWidgetChoice *>(field->widget)->deselectAll();
+-
+-    std::string name;
+-    if (XFAForm *xfa = xfa_form_of(field, &name)) {
+-        xfa->setFieldText(name, "");
+-    }
+ }
+ 
+ /**
+-- 
+2.43.0
+

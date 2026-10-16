@@ -1,0 +1,172 @@
+From ffa52b3ef552a794220af0b1ebb5438b3b7fe52d Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 16:26:54 -0700
+Subject: [PATCH 8/9] XFA: Preserve button appearance states in exported forms
+
+Do not request regeneration of supplied radio-button appearances. Viewers can otherwise replace the on/off appearance dictionary with a single stream when saving, breaking subsequent selections. Cover repeated switching, rendering, saving and reopening with a synthetic XFA form.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ glib/tests/check_xfa.c | 108 +++++++++++++++++++++++++++++++++++++++++
+ poppler/XFAWriter.cc   |   6 ++-
+ 2 files changed, 113 insertions(+), 1 deletion(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 110f51c..45b81a0 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include <string.h>
++#include <gio/gio.h>
+ 
+ #include <poppler.h>
+ 
+@@ -28,6 +29,10 @@ static const char *xdp = "<?xml version=\"1.0\"?>\n"
+                          "<event activity=\"exit\"><script contentType=\"application/x-javascript\">"
+                          "greeting.value.text.value = \"Hello \" + this.rawValue;</script></event>"
+                          "</field>"
++                         "<exclGroup name=\"choice\" layout=\"tb\" w=\"3in\">"
++                         "<field name=\"one\" w=\"1in\" h=\"0.4in\"><ui><checkButton shape=\"round\"/></ui><items><text>one</text></items></field>"
++                         "<field name=\"two\" w=\"1in\" h=\"0.4in\"><ui><checkButton shape=\"round\"/></ui><items><text>two</text></items></field>"
++                         "</exclGroup>"
+                          "</subform>"
+                          "<event activity=\"docReady\" ref=\"$host\"><script contentType=\"application/x-javascript\">"
+                          "_Main.setInstances(1);</script></event>"
+@@ -138,9 +143,112 @@ static void test_render_xfa(void)
+     g_bytes_unref(bytes);
+ }
+ 
++static int button_center_pixels(PopplerPage *page, PopplerRectangle area)
++{
++    double width, height;
++    poppler_page_get_size(page, &width, &height);
++    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width * 2, height * 2);
++    cairo_t *cr = cairo_create(surface);
++    cairo_set_source_rgb(cr, 1, 1, 1);
++    cairo_paint(cr);
++    cairo_scale(cr, 2, 2);
++    poppler_page_render(page, cr);
++    cairo_surface_flush(surface);
++    unsigned char *data = cairo_image_surface_get_data(surface);
++    int stride = cairo_image_surface_get_stride(surface);
++    int x = area.x1 + area.x2;
++    int y = height * 2 - area.y1 - area.y2;
++    int dark = 0;
++    for (int dy = -2; dy <= 2; ++dy) {
++        for (int dx = -2; dx <= 2; ++dx) {
++            unsigned char *pixel = data + (y + dy) * stride + (x + dx) * 4;
++            dark += pixel[0] < 128 && pixel[1] < 128 && pixel[2] < 128;
++        }
++    }
++    cairo_destroy(cr);
++    cairo_surface_destroy(surface);
++    return dark;
++}
++
++static void test_saved_radio(void)
++{
++    GBytes *bytes = build_pdf();
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    g_assert_nonnull(rendered);
++    PopplerFormField *text = first_text_field(rendered);
++    if (!text) {
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        g_object_unref(text);
++        GFileIOStream *io;
++        GFile *file = g_file_new_tmp("poppler-xfa-radio-XXXXXX.pdf", &io, &err);
++        g_assert_no_error(err);
++        g_assert_true(g_io_stream_close(G_IO_STREAM(io), NULL, &err));
++        g_assert_no_error(err);
++        g_object_unref(io);
++        char *uri = g_file_get_uri(file);
++        char *next_uri = g_strconcat(uri, "-next", NULL);
++        GFile *next_file = g_file_new_for_uri(next_uri);
++        g_assert_true(poppler_document_save(rendered, uri, &err));
++        g_assert_no_error(err);
++
++        /* Render, switch, save and reload repeatedly. With NeedAppearances
++         * true, saving replaces the button state dictionary with a single
++         * appearance stream, so the next selection no longer works. */
++        for (int round = 0; round < 3; ++round) {
++            PopplerDocument *saved = poppler_document_new_from_file(uri, NULL, &err);
++            g_assert_no_error(err);
++            PopplerPage *page = poppler_document_get_page(saved, 0);
++            GList *mapping = poppler_page_get_form_field_mapping(page);
++            PopplerFormFieldMapping *buttons[2] = { NULL, NULL };
++            int count = 0;
++            for (GList *l = mapping; l; l = l->next) {
++                PopplerFormFieldMapping *m = l->data;
++                if (poppler_form_field_get_field_type(m->field) == POPPLER_FORM_FIELD_BUTTON && poppler_form_field_button_get_button_type(m->field) == POPPLER_FORM_BUTTON_RADIO) {
++                    g_assert_cmpint(count, <, 2);
++                    buttons[count++] = m;
++                }
++            }
++            g_assert_cmpint(count, ==, 2);
++            for (int i = 0; i < 4; ++i) {
++                int selected = i % 2;
++                poppler_form_field_button_set_state(buttons[selected]->field, TRUE);
++                g_assert_true(poppler_form_field_button_get_state(buttons[selected]->field));
++                g_assert_false(poppler_form_field_button_get_state(buttons[1 - selected]->field));
++                g_assert_cmpint(button_center_pixels(page, buttons[selected]->area), >, 15);
++                g_assert_cmpint(button_center_pixels(page, buttons[1 - selected]->area), <, 5);
++            }
++            g_assert_true(poppler_document_save(saved, next_uri, &err));
++            g_assert_no_error(err);
++            poppler_page_free_form_field_mapping(mapping);
++            g_object_unref(page);
++            g_object_unref(saved);
++            char *previous_uri = uri;
++            uri = next_uri;
++            next_uri = previous_uri;
++        }
++        g_assert_true(g_file_delete(file, NULL, &err));
++        g_assert_no_error(err);
++        g_assert_true(g_file_delete(next_file, NULL, &err));
++        g_assert_no_error(err);
++        g_free(uri);
++        g_free(next_uri);
++        g_object_unref(file);
++        g_object_unref(next_file);
++    }
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+     g_test_add_func("/xfa/render", test_render_xfa);
++    g_test_add_func("/xfa/saved-radio", test_saved_radio);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index 4046d88..ddbb973 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -1049,7 +1049,11 @@ std::string Writer::write(const XFALayoutResult &layout)
+         fieldRefs += ref(f) + " ";
+     }
+     pdf.set(pagesObj, "<< /Type /Pages /Kids [" + kids + "] /Count " + std::to_string(pageObjs.size()) + " >>");
+-    pdf.set(acroForm, "<< /Fields [" + fieldRefs + "] /NeedAppearances true /DR << /Font " + fontDict + " >> /DA (/F4 10 Tf 0 g) >>");
++    // Button widgets already have distinct on/off appearances. Asking viewers
++    // to regenerate them can replace the state dictionary with a single stream,
++    // so subsequent radio selections have no matching appearance. Text and
++    // choice widgets without appearances are generated by viewers as needed.
++    pdf.set(acroForm, "<< /Fields [" + fieldRefs + "] /NeedAppearances false /DR << /Font " + fontDict + " >> /DA (/F4 10 Tf 0 g) >>");
+     pdf.set(catalog, "<< /Type /Catalog /Pages " + ref(pagesObj) + " /AcroForm " + ref(acroForm) + " >>");
+     return pdf.finish(catalog);
+ }
+-- 
+2.43.0
+

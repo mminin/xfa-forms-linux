@@ -1,0 +1,4 @@
+# name     url                                              base commit (the patches apply on top)
+quickjs    https://github.com/quickjs-ng/quickjs.git            9b061718955874e648d8c2bf2910a717aac8fa63
+poppler    https://gitlab.freedesktop.org/poppler/poppler.git   a45f83bdd75a7b1af73eef729383c4291abf27a3
+evince     https://gitlab.gnome.org/GNOME/evince.git            e822030005f22231052667d51398a84327004924

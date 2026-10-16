@@ -1,0 +1,537 @@
+From c81e8862923c5964f43e86050b0f1907397dd50d Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 15:03:52 -0700
+Subject: [PATCH 5/9] glib: Render dynamic XFA forms
+
+poppler_document_render_xfa() runs the XFA form of a document and returns
+a document with the generated pages and AcroForm fields. Changes made
+through those fields are passed to the form, and
+poppler_document_xfa_needs_rerender() tells when its scripts changed the
+form so that the document should be rendered again. Messages, URLs and
+print requests of the scripts are available through
+poppler_document_xfa_take_messages(), _take_urls() and
+_take_print_request(). Printing uses a variant of the pages without the
+objects that are relevant on screen only.
+
+Setting the state of a push button of a rendered form clicks it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/poppler-document.cc            | 185 ++++++++++++++++++++++++++++
+ glib/poppler-document.h             |  12 ++
+ glib/poppler-form-field.cc          |  54 +++++++-
+ glib/poppler-page.cc                |  11 ++
+ glib/poppler-private.h              |  10 ++
+ glib/reference/poppler-sections.txt |   6 +
+ poppler/XFAForm.cc                  |  13 ++
+ poppler/XFAForm.h                   |   1 +
+ poppler/XFAWriter.cc                |  29 ++++-
+ 9 files changed, 315 insertions(+), 6 deletions(-)
+
+diff --git a/glib/poppler-document.cc b/glib/poppler-document.cc
+index d2635db..b78aa94 100644
+--- a/glib/poppler-document.cc
++++ b/glib/poppler-document.cc
+@@ -62,6 +62,7 @@
+ #    include <PDFDocEncoding.h>
+ #    include <OptionalContent.h>
+ #    include <ViewerPreferences.h>
++#    include <XFAForm.h>
+ #    include "UTF.h"
+ #endif
+ 
+@@ -666,6 +667,8 @@ static void poppler_document_finalize(GObject *object)
+ 
+     poppler_document_layers_free(document);
+     delete document->output_dev;
++    g_clear_object(&document->xfa_print);
++    document->xfa.reset();
+     document->doc.reset();
+     document->initer.reset();
+ 
+@@ -2273,6 +2276,188 @@ gboolean poppler_document_get_needs_rendering(PopplerDocument *document)
+     return catalog->getNeedsRendering();
+ }
+ 
++/**
++ * poppler_document_render_xfa:
++ * @document: A #PopplerDocument
++ * @error: (allow-none): Return location for an error, or %NULL
++ *
++ * Renders the dynamic XFA form of @document, see
++ * poppler_document_get_needs_rendering(). The scripts of the form are run
++ * and the form is laid out on pages, which the returned document holds,
++ * along with AcroForm fields for the fields of the form.
++ *
++ * Changes made through the form fields of the returned document are
++ * passed to the XFA form, whose scripts may then change the layout. Use
++ * poppler_document_xfa_needs_rerender() to find out when that happens, and
++ * call this function again with the returned document to render the
++ * new state of the form.
++ *
++ * Printing the pages of the returned document leaves out the objects that
++ * the form shows on screen only, such as buttons.
++ *
++ * Return value: (transfer full): a new #PopplerDocument, or %NULL with
++ *   @error set when @document has no XFA form that can be rendered
++ *
++ * Since: 26.11
++ **/
++PopplerDocument *poppler_document_render_xfa(PopplerDocument *document, GError **error)
++{
++    g_return_val_if_fail(POPPLER_IS_DOCUMENT(document), nullptr);
++
++    std::shared_ptr<XFAForm> form = document->xfa;
++    if (!form) {
++        std::string message;
++        std::unique_ptr<XFAForm> loaded = XFAForm::load(document->doc.get(), &message);
++        if (!loaded) {
++            g_set_error(error, POPPLER_ERROR, POPPLER_ERROR_INVALID, "%s", message.c_str());
++            return nullptr;
++        }
++        form = std::move(loaded);
++    }
++
++    const std::string pdf = form->generatePDF(false);
++    const std::string printPdf = form->generatePDF(true);
++
++    GBytes *bytes = g_bytes_new(pdf.data(), pdf.size());
++    PopplerDocument *rendered = poppler_document_new_from_bytes(bytes, nullptr, error);
++    g_bytes_unref(bytes);
++    if (!rendered) {
++        return nullptr;
++    }
++    bytes = g_bytes_new(printPdf.data(), printPdf.size());
++    rendered->xfa_print = poppler_document_new_from_bytes(bytes, nullptr, nullptr);
++    g_bytes_unref(bytes);
++
++    rendered->xfa = std::move(form);
++    rendered->xfa_change_count = rendered->xfa->getChangeCount();
++    return rendered;
++}
++
++/**
++ * poppler_document_is_xfa_rendered:
++ * @document: A #PopplerDocument
++ *
++ * Returns whether @document was made by poppler_document_render_xfa().
++ *
++ * Return value: %TRUE if @document holds a rendered XFA form
++ *
++ * Since: 26.11
++ **/
++gboolean poppler_document_is_xfa_rendered(PopplerDocument *document)
++{
++    g_return_val_if_fail(POPPLER_IS_DOCUMENT(document), FALSE);
++
++    return document->xfa != nullptr;
++}
++
++/**
++ * poppler_document_xfa_needs_rerender:
++ * @document: A #PopplerDocument made by poppler_document_render_xfa()
++ *
++ * Returns whether the scripts of the XFA form changed the form in ways
++ * the pages of @document do not show, after its form fields were changed.
++ * Values typed into fields by the user are not such changes.
++ *
++ * Return value: %TRUE if @document should be rendered again with
++ *   poppler_document_render_xfa()
++ *
++ * Since: 26.11
++ **/
++gboolean poppler_document_xfa_needs_rerender(PopplerDocument *document)
++{
++    g_return_val_if_fail(POPPLER_IS_DOCUMENT(document), FALSE);
++
++    return document->xfa && document->xfa->getChangeCount() != document->xfa_change_count;
++}
++
++static gchar **take_xfa_requests(PopplerDocument *document, XFAHostRequest::Type type)
++{
++    GPtrArray *res = g_ptr_array_new();
++    if (document->xfa) {
++        for (const XFAHostRequest &r : document->xfa->takeHostRequests(type)) {
++            std::string text = r.text;
++            if (type == XFAHostRequest::Type::Message && !r.title.empty()) {
++                text = r.title + "\n\n" + text;
++            }
++            g_ptr_array_add(res, g_strdup(text.c_str()));
++        }
++    }
++    g_ptr_array_add(res, nullptr);
++    return reinterpret_cast<gchar **>(g_ptr_array_free(res, FALSE));
++}
++
++/**
++ * poppler_document_xfa_take_messages:
++ * @document: A #PopplerDocument made by poppler_document_render_xfa()
++ *
++ * Returns the messages the scripts of the XFA form showed since the last
++ * call, and forgets them. Scripts asking for confirmation were answered
++ * with "Yes".
++ *
++ * Return value: (transfer full) (array zero-terminated=1): the messages,
++ *   with the title, if any, in front. Free with g_strfreev().
++ *
++ * Since: 26.11
++ **/
++gchar **poppler_document_xfa_take_messages(PopplerDocument *document)
++{
++    g_return_val_if_fail(POPPLER_IS_DOCUMENT(document), nullptr);
++
++    return take_xfa_requests(document, XFAHostRequest::Type::Message);
++}
++
++/**
++ * poppler_document_xfa_take_urls:
++ * @document: A #PopplerDocument made by poppler_document_render_xfa()
++ *
++ * Returns the URLs the scripts of the XFA form asked to open since the
++ * last call, and forgets them.
++ *
++ * Return value: (transfer full) (array zero-terminated=1): the URLs.
++ *   Free with g_strfreev().
++ *
++ * Since: 26.11
++ **/
++gchar **poppler_document_xfa_take_urls(PopplerDocument *document)
++{
++    g_return_val_if_fail(POPPLER_IS_DOCUMENT(document), nullptr);
++
++    return take_xfa_requests(document, XFAHostRequest::Type::LaunchURL);
++}
++
++/**
++ * poppler_document_xfa_take_print_request:
++ * @document: A #PopplerDocument made by poppler_document_render_xfa()
++ * @first_page: (out) (allow-none): return location for the first page to print, 0-based, or -1
++ * @last_page: (out) (allow-none): return location for the last page to print, 0-based, or -1
++ *
++ * Returns whether the scripts of the XFA form asked to print since the
++ * last call, and forgets the request. -1 page numbers mean all pages.
++ *
++ * Return value: %TRUE if printing was requested
++ *
++ * Since: 26.11
++ **/
++gboolean poppler_document_xfa_take_print_request(PopplerDocument *document, gint *first_page, gint *last_page)
++{
++    g_return_val_if_fail(POPPLER_IS_DOCUMENT(document), FALSE);
++
++    if (!document->xfa) {
++        return FALSE;
++    }
++    const std::vector<XFAHostRequest> requests = document->xfa->takeHostRequests(XFAHostRequest::Type::Print);
++    if (requests.empty()) {
++        return FALSE;
++    }
++    if (first_page) {
++        *first_page = requests.back().firstPage;
++    }
++    if (last_page) {
++        *last_page = requests.back().lastPage;
++    }
++    return TRUE;
++}
++
+ /**
+  * poppler_document_has_javascript:
+  * @document: A #PopplerDocument
+diff --git a/glib/poppler-document.h b/glib/poppler-document.h
+index 2426ed4..5279ce7 100644
+--- a/glib/poppler-document.h
++++ b/glib/poppler-document.h
+@@ -445,6 +445,18 @@ POPPLER_PUBLIC
+ PopplerFormType poppler_document_get_form_type(PopplerDocument *document);
+ POPPLER_PUBLIC
+ gboolean poppler_document_get_needs_rendering(PopplerDocument *document);
++POPPLER_PUBLIC
++PopplerDocument *poppler_document_render_xfa(PopplerDocument *document, GError **error);
++POPPLER_PUBLIC
++gboolean poppler_document_is_xfa_rendered(PopplerDocument *document);
++POPPLER_PUBLIC
++gboolean poppler_document_xfa_needs_rerender(PopplerDocument *document);
++POPPLER_PUBLIC
++gchar **poppler_document_xfa_take_messages(PopplerDocument *document);
++POPPLER_PUBLIC
++gchar **poppler_document_xfa_take_urls(PopplerDocument *document);
++POPPLER_PUBLIC
++gboolean poppler_document_xfa_take_print_request(PopplerDocument *document, gint *first_page, gint *last_page);
+ /* Javascript */
+ POPPLER_PUBLIC
+ gboolean poppler_document_has_javascript(PopplerDocument *document);
+diff --git a/glib/poppler-form-field.cc b/glib/poppler-form-field.cc
+index 77124af..6332ef8 100644
+--- a/glib/poppler-form-field.cc
++++ b/glib/poppler-form-field.cc
+@@ -30,6 +30,8 @@
+ #include "poppler.h"
+ #include "poppler-private.h"
+ 
++#include <XFAForm.h>
++
+ #include <CertificateInfo.h>
+ #if ENABLE_NSS3
+ #    include <NSSCryptoSignBackend.h>
+@@ -302,11 +304,36 @@ gboolean poppler_form_field_button_get_state(PopplerFormField *field)
+  * Sets the status of @field. Set to %TRUE if you want the #PopplerFormField
+  * to be 'pressed in', and %FALSE to raise it.
+  **/
++// Fields of documents rendered from XFA forms pass changes on to the form.
++static XFAForm *xfa_form_of(PopplerFormField *field, std::string *name)
++{
++    XFAForm *form = field->document ? field->document->xfa.get() : nullptr;
++    if (form) {
++        const GooString *fqn = field->widget->getFullyQualifiedName();
++        *name = fqn ? fqn->toStr() : std::string();
++    }
++    return form;
++}
++
+ void poppler_form_field_button_set_state(PopplerFormField *field, gboolean state)
+ {
+     g_return_if_fail(field->widget->getType() == formButton);
+ 
+-    static_cast<FormWidgetButton *>(field->widget)->setState(static_cast<bool>(state));
++    auto *button = static_cast<FormWidgetButton *>(field->widget);
++    std::string name;
++    if (XFAForm *xfa = xfa_form_of(field, &name)) {
++        // Push buttons have no state: setting it clicks them.
++        if (button->getButtonType() == formButtonPush) {
++            if (state) {
++                xfa->clickButton(name);
++            }
++            return;
++        }
++        button->setState(static_cast<bool>(state));
++        xfa->setButtonState(name, button->getOnStr() ? button->getOnStr() : "", state);
++        return;
++    }
++    button->setState(static_cast<bool>(state));
+ }
+ 
+ /**
+@@ -829,6 +856,11 @@ void poppler_form_field_text_set_text(PopplerFormField *field, const gchar *text
+     std::unique_ptr<GooString> goo_tmp = std::make_unique<GooString>(tmp, length);
+     g_free(tmp);
+     static_cast<FormWidgetText *>(field->widget)->setContent(std::move(goo_tmp));
++
++    std::string name;
++    if (XFAForm *xfa = xfa_form_of(field, &name)) {
++        xfa->setFieldText(name, text ? text : "");
++    }
+ }
+ 
+ /**
+@@ -1034,6 +1066,11 @@ void poppler_form_field_choice_select_item(PopplerFormField *field, gint index)
+     g_return_if_fail(index >= 0 && index < poppler_form_field_choice_get_n_items(field));
+ 
+     static_cast<FormWidgetChoice *>(field->widget)->select(index);
++
++    std::string name;
++    if (XFAForm *xfa = xfa_form_of(field, &name)) {
++        xfa->setFieldChoice(name, index);
++    }
+ }
+ 
+ /**
+@@ -1047,6 +1084,11 @@ void poppler_form_field_choice_unselect_all(PopplerFormField *field)
+     g_return_if_fail(field->widget->getType() == formChoice);
+ 
+     static_cast<FormWidgetChoice *>(field->widget)->deselectAll();
++
++    std::string name;
++    if (XFAForm *xfa = xfa_form_of(field, &name)) {
++        xfa->setFieldText(name, "");
++    }
+ }
+ 
+ /**
+@@ -1062,6 +1104,11 @@ void poppler_form_field_choice_toggle_item(PopplerFormField *field, gint index)
+     g_return_if_fail(index >= 0 && index < poppler_form_field_choice_get_n_items(field));
+ 
+     static_cast<FormWidgetChoice *>(field->widget)->toggle(index);
++
++    std::string name;
++    if (XFAForm *xfa = xfa_form_of(field, &name)) {
++        xfa->setFieldChoice(name, index);
++    }
+ }
+ 
+ /**
+@@ -1082,6 +1129,11 @@ void poppler_form_field_choice_set_text(PopplerFormField *field, const gchar *te
+     std::unique_ptr<GooString> goo_tmp = std::make_unique<GooString>(tmp, length);
+     g_free(tmp);
+     static_cast<FormWidgetChoice *>(field->widget)->setEditChoice(std::move(goo_tmp));
++
++    std::string name;
++    if (XFAForm *xfa = xfa_form_of(field, &name)) {
++        xfa->setFieldText(name, text ? text : "");
++    }
+ }
+ 
+ /**
+diff --git a/glib/poppler-page.cc b/glib/poppler-page.cc
+index 9cc7184..3b9fb60 100644
+--- a/glib/poppler-page.cc
++++ b/glib/poppler-page.cc
+@@ -307,6 +307,17 @@ void poppler_page_render_full(PopplerPage *page, cairo_t *cairo, gboolean printi
+     g_return_if_fail(POPPLER_IS_PAGE(page));
+     g_return_if_fail(cairo != nullptr);
+ 
++    // Rendered XFA forms print a variant of their pages without the
++    // objects meant for the screen only.
++    if (printing && page->document->xfa_print) {
++        PopplerPage *print_page = poppler_document_get_page(page->document->xfa_print, page->index);
++        if (print_page) {
++            poppler_page_render_full(print_page, cairo, printing, flags);
++            g_object_unref(print_page);
++            return;
++        }
++    }
++
+     std::unique_lock lock(page->mutex);
+ 
+     output_dev = page->document->output_dev;
+diff --git a/glib/poppler-private.h b/glib/poppler-private.h
+index dd44791..206e95b 100644
+--- a/glib/poppler-private.h
++++ b/glib/poppler-private.h
+@@ -23,6 +23,8 @@
+ 
+ #define SUPPORTED_ROTATION(r) ((r) == 90 || (r) == 180 || (r) == 270)
+ 
++class XFAForm;
++
+ struct _PopplerDocument
+ {
+     /*< private >*/
+@@ -33,6 +35,14 @@ struct _PopplerDocument
+     GList *layers;
+     GList *layers_rbgroups;
+     CairoOutputDev *output_dev;
++
++    // Set on documents made by poppler_document_render_xfa(): the form
++    // engine, shared with the other documents rendered from the same form,
++    // its change count when this document was rendered, and the variant of
++    // the pages used for printing.
++    std::shared_ptr<XFAForm> xfa;
++    unsigned int xfa_change_count;
++    PopplerDocument *xfa_print;
+ };
+ 
+ struct _PopplerPSFile
+diff --git a/glib/reference/poppler-sections.txt b/glib/reference/poppler-sections.txt
+index fe7d7b4..6da3313 100644
+--- a/glib/reference/poppler-sections.txt
++++ b/glib/reference/poppler-sections.txt
+@@ -201,12 +201,14 @@ poppler_document_get_title
+ poppler_document_has_attachments
+ poppler_document_has_javascript
+ poppler_document_is_linearized
++poppler_document_is_xfa_rendered
+ poppler_document_new_from_bytes
+ poppler_document_new_from_data
+ poppler_document_new_from_fd
+ poppler_document_new_from_file
+ poppler_document_new_from_gfile
+ poppler_document_new_from_stream
++poppler_document_render_xfa
+ poppler_document_reset_form
+ poppler_document_save
+ poppler_document_save_a_copy
+@@ -221,6 +223,10 @@ poppler_document_set_modification_date_time
+ poppler_document_set_producer
+ poppler_document_set_subject
+ poppler_document_set_title
++poppler_document_xfa_needs_rerender
++poppler_document_xfa_take_messages
++poppler_document_xfa_take_print_request
++poppler_document_xfa_take_urls
+ poppler_font_info_free
+ poppler_font_info_new
+ poppler_font_info_scan
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 76a2f29..103efb4 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -1246,6 +1246,19 @@ std::vector<XFAHostRequest> XFAForm::takeHostRequests()
+     return std::exchange(requests, {});
+ }
+ 
++std::vector<XFAHostRequest> XFAForm::takeHostRequests(XFAHostRequest::Type type)
++{
++    std::vector<XFAHostRequest> taken;
++    std::erase_if(requests, [&](const XFAHostRequest &r) {
++        if (r.type != type) {
++            return false;
++        }
++        taken.push_back(r);
++        return true;
++    });
++    return taken;
++}
++
+ void XFAForm::logMessage(const std::string &msg)
+ {
+     if (log.size() < 1000) {
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index bef575f..d38562a 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -76,6 +76,7 @@ public:
+     bool clickBySOM(const std::string &som);
+ 
+     std::vector<XFAHostRequest> takeHostRequests();
++    std::vector<XFAHostRequest> takeHostRequests(XFAHostRequest::Type type);
+ 
+     // Number of times the visible form changed so far.
+     unsigned int getChangeCount() const { return changeCount; }
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index 80ec5a8..4046d88 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -811,15 +811,34 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub
+         rh = size;
+     }
+     std::string common = "/Type /Annot /Subtype /Widget /Rect [" + num(rx) + " " + num(py(ry + rh)) + " " + num(rx + rw) + " " + num(py(ry)) + "] /F 4 /P " + ref(page->pageObj);
++    // Alternate name, for tooltips and screen readers: the tool tip, else
++    // the spoken text, else the caption.
++    std::string tooltip;
+     if (const XFANode *assist = field->firstChild("assist")) {
+-        const XFANode *tip = assist->firstChild("toolTip");
+-        if (!tip) {
+-            tip = assist->firstChild("speak");
++        for (const char *cls : { "toolTip", "speak" }) {
++            if (const XFANode *tip = assist->firstChild(cls); tip && tooltip.empty()) {
++                tooltip = tip->textContent();
++            }
++        }
++    }
++    if (tooltip.empty()) {
++        if (const XFANode *caption = field->firstChild("caption")) {
++            tooltip = caption->textContent();
+         }
+-        if (tip && !tip->textContent().empty()) {
+-            common += " /TU " + pdfTextString(tip->textContent());
++        if (tooltip.empty() && field->getParent() && field->getParent()->getClassName() == "exclGroup") {
++            if (const XFANode *caption = field->getParent()->firstChild("caption")) {
++                tooltip = caption->textContent();
++            }
+         }
+     }
++    for (char &c : tooltip) {
++        if (c == '\n' || c == '\r' || c == '\t') {
++            c = ' ';
++        }
++    }
++    if (!tooltip.empty()) {
++        common += " /TU " + pdfTextString(tooltip);
++    }
+     const std::optional<std::string> raw = form->getRawValue(field);
+     int ff = readOnly ? 1 : 0;
+ 
+-- 
+2.43.0
+

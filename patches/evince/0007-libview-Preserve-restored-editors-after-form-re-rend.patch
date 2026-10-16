@@ -1,0 +1,91 @@
+From ebe987f678e3da7046c2f633d3bbaa490ed515d7 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 16:18:00 -0700
+Subject: [PATCH 7/8] libview: Preserve restored editors after form
+ re-rendering
+
+Ignore deferred popup-close callbacks from detached editors and retain the view until those callbacks finish. Allocate restored editors after page rendering completes and clear the old focused mapping before destroying its cache.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ libview/ev-view.c | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index f219a0c..78b255f 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -598,6 +598,10 @@ ev_view_set_loading (EvView       *view,
+ 		return;
+ 
+ 	priv->loading = loading;
++	/* Allocation is skipped while the page is loading. Editors restored
++	 * during that time still need to be allocated when rendering finishes. */
++	if (!loading && gtk_widget_get_first_child (GTK_WIDGET (view)))
++		gtk_widget_queue_allocate (GTK_WIDGET (view));
+ 	g_object_notify (G_OBJECT (view), "is-loading");
+ }
+ 
+@@ -2572,6 +2576,9 @@ ev_view_page_cached_cb (EvPageCache *page_cache,
+ 			g_clear_pointer (&priv->refocus_field_name, g_free);
+ 			ev_view_remove_all_form_fields (view);
+ 			_ev_view_focus_form_field (view, field);
++			/* The cache may finish after the view's allocation. Allocate
++			 * the restored editor before its popup tick runs. */
++			gtk_widget_queue_allocate (GTK_WIDGET (view));
+ 			break;
+ 		}
+ 	}
+@@ -2635,6 +2642,7 @@ ev_view_apply_form_changes (EvView *view)
+ 		ev_document_model_set_document (priv->model, rerendered);
+ 		g_object_unref (rerendered);
+ 		/* Keep editing the field the user went to */
++		g_clear_pointer (&priv->refocus_field_name, g_free);
+ 		priv->refocus_field_name = g_steal_pointer (&edited);
+ 	}
+ 
+@@ -2988,11 +2996,16 @@ typedef struct _PopupShownData {
+ static void
+ ev_view_form_field_choice_popup_shown_real (PopupShownData *data)
+ {
+-	ev_view_form_field_choice_changed (data->choice, data->field);
+-	ev_view_form_field_destroy (data->choice, data->view);
++	/* Replacing the document closes the old popup too. Its deferred
++	 * callback must not remove the editor restored in the new document. */
++	if (gtk_widget_get_parent (data->choice) == GTK_WIDGET (data->view)) {
++		ev_view_form_field_choice_changed (data->choice, data->field);
++		ev_view_form_field_destroy (data->choice, data->view);
++	}
+ 
+ 	g_object_unref (data->choice);
+ 	g_object_unref (data->field);
++	g_object_unref (data->view);
+ 	g_free (data);
+ }
+ 
+@@ -3017,7 +3030,7 @@ ev_view_form_field_choice_popup_shown_cb (GObject    *self,
+ 	data = g_new0 (PopupShownData, 1);
+ 	data->choice = g_object_ref (choice);
+ 	data->field = g_object_ref (field);
+-	data->view = view;
++	data->view = g_object_ref (view);
+ 	/* We need to use an idle here because combobox "active" item is not updated yet */
+ 	g_idle_add_once ((GSourceOnceFunc) ev_view_form_field_choice_popup_shown_real,
+ 			 (gpointer) data);
+@@ -8612,6 +8625,10 @@ ev_view_document_changed_cb (EvDocumentModel *model,
+ 		gint current_page;
+ 
+ 		ev_view_remove_all (view);
++		/* The focused mapping belongs to the old page cache. */
++		_ev_view_set_focused_element (view, NULL, -1);
++		if (priv->pixbuf_cache)
++			clear_selection (view);
+ 		clear_caches (view);
+ 
+ 		if (priv->document) {
+-- 
+2.43.0
+

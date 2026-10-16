@@ -1,0 +1,44 @@
+From b870c481cacea3dae77e364d2ae66ef3e15f3a1b Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 16:18:00 -0700
+Subject: [PATCH 8/8] shell: Select text in the active editor with Select All
+
+When a form entry or text view has focus, apply Select All to that editor. Selecting document text instead prevented subsequent clicks from activating another form field.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ shell/ev-window.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/shell/ev-window.c b/shell/ev-window.c
+index 4a1c6e5..e75984e 100644
+--- a/shell/ev-window.c
++++ b/shell/ev-window.c
+@@ -4331,6 +4331,21 @@ ev_window_cmd_edit_select_all (GSimpleAction *action,
+ {
+ 	EvWindow *ev_window = user_data;
+ 	EvWindowPrivate *priv = GET_PRIVATE (ev_window);
++	GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (ev_window));
++
++	/* The window shortcut also runs while editing a form field. */
++	if (GTK_IS_EDITABLE (focus)) {
++		gtk_editable_select_region (GTK_EDITABLE (focus), 0, -1);
++		return;
++	}
++	if (GTK_IS_TEXT_VIEW (focus)) {
++		GtkTextBuffer *buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (focus));
++		GtkTextIter start, end;
++
++		gtk_text_buffer_get_bounds (buffer, &start, &end);
++		gtk_text_buffer_select_range (buffer, &start, &end);
++		return;
++	}
+ 
+ 	ev_view_select_all (EV_VIEW (priv->view));
+ }
+-- 
+2.43.0
+

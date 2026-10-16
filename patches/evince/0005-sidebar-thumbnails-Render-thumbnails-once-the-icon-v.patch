@@ -1,0 +1,89 @@
+From 013c336b3c7e4552f0951150f2db859961e2f79f Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 15:56:15 -0700
+Subject: [PATCH 5/8] sidebar-thumbnails: Render thumbnails once the icon view
+ is laid out
+
+When a document is loaded, the icon view does not know the positions of
+its items yet, so there is no visible range and no thumbnail is
+rendered. When all the thumbnails fit, nothing scrolls and no other
+change of the adjustment asks again, so they stay blank. Try again on
+the next frames until the icon view is laid out.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ shell/ev-sidebar-thumbnails.c | 29 ++++++++++++++++++++++++++++-
+ 1 file changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/shell/ev-sidebar-thumbnails.c b/shell/ev-sidebar-thumbnails.c
+index 6eae523..a5518fa 100644
+--- a/shell/ev-sidebar-thumbnails.c
++++ b/shell/ev-sidebar-thumbnails.c
+@@ -76,6 +76,9 @@ struct _EvSidebarThumbnailsPrivate {
+ 					 * for dual mode with !odd_left preference. Issue #30 */
+ 	/* Visible pages */
+ 	gint start_page, end_page;
++	/* Frames to wait for the icon view to be laid out */
++	guint layout_tick_id;
++	gint layout_ticks;
+ };
+ 
+ enum {
+@@ -545,6 +548,20 @@ update_visible_range (EvSidebarThumbnails *sidebar_thumbnails,
+ 	priv->end_page = end_page;
+ }
+ 
++static gboolean
++layout_tick_cb (GtkWidget     *widget,
++		GdkFrameClock *frame_clock,
++		gpointer       user_data)
++{
++	EvSidebarThumbnails *sidebar_thumbnails = EV_SIDEBAR_THUMBNAILS (widget);
++	EvSidebarThumbnailsPrivate *priv = sidebar_thumbnails->priv;
++
++	priv->layout_tick_id = 0;
++	adjustment_changed_cb (sidebar_thumbnails);
++
++	return G_SOURCE_REMOVE;
++}
++
+ static void
+ adjustment_changed_cb (EvSidebarThumbnails *sidebar_thumbnails)
+ {
+@@ -565,8 +582,16 @@ adjustment_changed_cb (EvSidebarThumbnails *sidebar_thumbnails)
+ 	if (priv->icon_view) {
+ 		if (! gtk_widget_get_realized (priv->icon_view))
+ 			return;
+-		if (! gtk_icon_view_get_visible_range (GTK_ICON_VIEW (priv->icon_view), &path, &path2))
++		if (! gtk_icon_view_get_visible_range (GTK_ICON_VIEW (priv->icon_view), &path, &path2)) {
++			/* The icon view is not laid out yet, which does not
++			 * change the adjustment when all thumbnails fit */
++			if (priv->start_page < 0 && priv->layout_ticks++ < 60 &&
++			    priv->layout_tick_id == 0)
++				priv->layout_tick_id =
++					gtk_widget_add_tick_callback (GTK_WIDGET (sidebar_thumbnails),
++								      layout_tick_cb, NULL, NULL);
+ 			return;
++		}
+ 	} else {
+ 		return;
+ 	}
+@@ -813,6 +838,7 @@ ev_sidebar_thumbnails_reload (EvSidebarThumbnails *sidebar_thumbnails)
+ 
+ 	/* Trigger a redraw */
+ 	sidebar_thumbnails->priv->start_page = -1;
++	sidebar_thumbnails->priv->layout_ticks = 0;
+ 	sidebar_thumbnails->priv->end_page = -1;
+ 	ev_sidebar_thumbnails_set_current_page (sidebar_thumbnails,
+ 						ev_document_model_get_page (model));
+@@ -926,6 +952,7 @@ ev_sidebar_thumbnails_document_changed_cb (EvDocumentModel     *model,
+ 			  G_CALLBACK (ev_sidebar_thumbnails_inverted_colors_changed_cb),
+ 			  sidebar_thumbnails);
+ 	sidebar_thumbnails->priv->start_page = -1;
++	sidebar_thumbnails->priv->layout_ticks = 0;
+ 	sidebar_thumbnails->priv->end_page = -1;
+ 	ev_sidebar_thumbnails_set_current_page (sidebar_thumbnails,
+ 						ev_document_model_get_page (model));
+-- 
+2.43.0
+

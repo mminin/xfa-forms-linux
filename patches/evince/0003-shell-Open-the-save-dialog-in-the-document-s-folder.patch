@@ -1,0 +1,30 @@
+From 2b6a79a119940ff2a51ede819f6577fdbe9fc021 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 15:43:24 -0700
+Subject: [PATCH 3/8] shell: Open the save dialog in the document's folder
+
+dest_dir is a path, not a URI, so the file chooser was given an
+invalid folder and showed "The folder contents could not be
+displayed".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ shell/ev-window.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/shell/ev-window.c b/shell/ev-window.c
+index 5c563b7..9037eca 100644
+--- a/shell/ev-window.c
++++ b/shell/ev-window.c
+@@ -3070,7 +3070,7 @@ ev_window_save_as (EvWindow *ev_window)
+ 	                    !g_str_has_prefix (dir_name, var_tmp_dir) ?
+ 	                    dir_name : default_dir;
+ 
+-	dest_file = g_file_new_for_uri (dest_dir);
++	dest_file = g_file_new_for_path (dest_dir);
+ 	gtk_file_chooser_set_current_folder (GTK_FILE_CHOOSER (fc),
+ 					     dest_file, NULL);
+ 
+-- 
+2.43.0
+

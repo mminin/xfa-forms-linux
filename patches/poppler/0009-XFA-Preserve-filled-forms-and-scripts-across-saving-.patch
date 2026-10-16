@@ -1,0 +1,522 @@
+From 11ca9a908d07441c40dc4f0dd5ed69905697ea4a Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 16:53:17 -0700
+Subject: [PATCH 9/9] XFA: Preserve filled forms and scripts across saving and
+ reopening
+
+Save the original XDP together with a versioned form DOM snapshot. Restore values, instance-manager prototypes, visibility and rich text without rerunning initialization. Reconnect script objects so saved forms can regenerate letters. Cover file and FD saves with repeated reopen, edit and scripted row-creation tests; add an explicit reusable-form CLI export.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ glib/poppler-document.cc |  17 ++++++
+ glib/tests/check_xfa.c   | 103 ++++++++++++++++++++++++++++++++++-
+ poppler/XFAForm.cc       | 112 ++++++++++++++++++++++++++++++++++++---
+ poppler/XFAForm.h        |   6 +++
+ poppler/XFAWriter.cc     |  17 ++++--
+ poppler/XFAWriter.h      |   2 +-
+ utils/pdfxfa.cc          |  19 ++++---
+ 7 files changed, 255 insertions(+), 21 deletions(-)
+
+diff --git a/glib/poppler-document.cc b/glib/poppler-document.cc
+index b78aa94..00a60db 100644
+--- a/glib/poppler-document.cc
++++ b/glib/poppler-document.cc
+@@ -563,6 +563,12 @@ gboolean poppler_document_save(PopplerDocument *document, const char *uri, GErro
+ 
+     filename = g_filename_from_uri(uri, nullptr, error);
+     if (filename != nullptr) {
++        if (document->xfa) {
++            const std::string pdf = document->xfa->generateSavedPDF();
++            retval = g_file_set_contents(filename, pdf.data(), pdf.size(), error);
++            g_free(filename);
++            return retval;
++        }
+         const std::string fname(filename);
+         int err_code;
+         g_free(filename);
+@@ -648,6 +654,17 @@ gboolean poppler_document_save_to_fd(PopplerDocument *document, int fd, gboolean
+         return FALSE;
+     }
+ 
++    if (include_changes && document->xfa) {
++        const std::string pdf = document->xfa->generateSavedPDF();
++        const bool written = fwrite(pdf.data(), 1, pdf.size(), file) == pdf.size();
++        const int closed = fclose(file);
++        if (!written || closed != 0) {
++            int errsv = errno;
++            g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errsv), "Failed to write XFA form: %s", g_strerror(errsv));
++            return FALSE;
++        }
++        return TRUE;
++    }
+     stream = new FileOutStream(file, 0);
+     if (include_changes) {
+         rv = document->doc->saveAs(stream);
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 45b81a0..339d02a 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -26,6 +26,8 @@ static const char *xdp = "<?xml version=\"1.0\"?>\n"
+                          "<subform name=\"Main\" layout=\"tb\" w=\"7.5in\"><occur min=\"0\"/>"
+                          "<draw name=\"greeting\" w=\"7in\" h=\"0.5in\"><font typeface=\"Arial\"/><value><text>Hello</text></value></draw>"
+                          "<field name=\"who\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui>"
++                         "<assist><toolTip>Name</toolTip></assist>"
++                         "<event activity=\"initialize\"><script contentType=\"application/x-javascript\">this.rawValue = \"Initial\";</script></event>"
+                          "<event activity=\"exit\"><script contentType=\"application/x-javascript\">"
+                          "greeting.value.text.value = \"Hello \" + this.rawValue;</script></event>"
+                          "</field>"
+@@ -33,6 +35,13 @@ static const char *xdp = "<?xml version=\"1.0\"?>\n"
+                          "<field name=\"one\" w=\"1in\" h=\"0.4in\"><ui><checkButton shape=\"round\"/></ui><items><text>one</text></items></field>"
+                          "<field name=\"two\" w=\"1in\" h=\"0.4in\"><ui><checkButton shape=\"round\"/></ui><items><text>two</text></items></field>"
+                          "</exclGroup>"
++                         "<field name=\"generate\" w=\"2in\" h=\"0.4in\"><ui><button/></ui>"
++                         "<event activity=\"click\"><script contentType=\"application/x-javascript\">"
++                         "greeting.value.text.value = \"Generated \" + who.rawValue; _Rows.addInstance();"
++                         "</script></event></field>"
++                         "<subform name=\"Rows\" layout=\"tb\" w=\"3in\"><occur min=\"0\" max=\"-1\"/>"
++                         "<field name=\"entry\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui><value><text>Row</text></value></field>"
++                         "</subform>"
+                          "</subform>"
+                          "<event activity=\"docReady\" ref=\"$host\"><script contentType=\"application/x-javascript\">"
+                          "_Main.setInstances(1);</script></event>"
+@@ -85,7 +94,10 @@ static PopplerFormField *first_text_field(PopplerDocument *doc)
+ 
+     for (GList *l = mapping; l; l = l->next) {
+         PopplerFormFieldMapping *m = l->data;
+-        if (poppler_form_field_get_field_type(m->field) == POPPLER_FORM_FIELD_TEXT) {
++        char *label = poppler_form_field_get_alternate_ui_name(m->field);
++        gboolean is_name = g_strcmp0(label, "Name") == 0;
++        g_free(label);
++        if (poppler_form_field_get_field_type(m->field) == POPPLER_FORM_FIELD_TEXT && is_name) {
+             field = g_object_ref(m->field);
+             break;
+         }
+@@ -245,10 +257,99 @@ static void test_saved_radio(void)
+     g_bytes_unref(bytes);
+ }
+ 
++static void test_saved_scripts(void)
++{
++    GBytes *bytes = build_pdf();
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *doc = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    PopplerFormField *field = first_text_field(doc);
++    if (!field) {
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        poppler_form_field_text_set_text(field, "World & family");
++        g_object_unref(field);
++        GFileIOStream *io;
++        GFile *file = g_file_new_tmp("poppler-xfa-state-XXXXXX.pdf", &io, &err);
++        g_assert_no_error(err);
++        g_assert_true(g_io_stream_close(G_IO_STREAM(io), NULL, &err));
++        g_assert_no_error(err);
++        g_object_unref(io);
++        char *uri = g_file_get_uri(file);
++        for (int round = 0; round < 3; ++round) {
++#ifndef G_OS_WIN32
++            if (round == 1) {
++                char *fd_path;
++                int fd = g_file_open_tmp("poppler-xfa-fd-XXXXXX.pdf", &fd_path, &err);
++                g_assert_no_error(err);
++                g_assert_true(poppler_document_save_to_fd(doc, fd, TRUE, &err));
++                g_assert_no_error(err);
++                GFile *fd_file = g_file_new_for_path(fd_path);
++                g_assert_true(g_file_move(fd_file, file, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, &err));
++                g_assert_no_error(err);
++                g_object_unref(fd_file);
++                g_free(fd_path);
++            } else
++#endif
++            {
++                g_assert_true(poppler_document_save(doc, uri, &err));
++            }
++            g_assert_no_error(err);
++            g_object_unref(doc);
++            PopplerDocument *saved = poppler_document_new_from_file(uri, NULL, &err);
++            g_assert_no_error(err);
++            g_assert_true(poppler_document_get_needs_rendering(saved));
++            g_assert_cmpint(poppler_document_get_form_type(saved), ==, POPPLER_FORM_TYPE_XFA);
++            doc = poppler_document_render_xfa(saved, &err);
++            g_assert_no_error(err);
++            g_object_unref(saved);
++            field = first_text_field(doc);
++            char *value = poppler_form_field_text_get_text(field);
++            g_assert_cmpstr(value, ==, "World & family");
++            g_free(value);
++            g_object_unref(field);
++            PopplerPage *page = poppler_document_get_page(doc, 0);
++            GList *mapping = poppler_page_get_form_field_mapping(page);
++            int text_fields = 0;
++            PopplerFormField *generate = NULL;
++            for (GList *l = mapping; l; l = l->next) {
++                PopplerFormFieldMapping *m = l->data;
++                if (poppler_form_field_get_field_type(m->field) == POPPLER_FORM_FIELD_TEXT) {
++                    ++text_fields;
++                } else if (poppler_form_field_get_field_type(m->field) == POPPLER_FORM_FIELD_BUTTON && poppler_form_field_button_get_button_type(m->field) == POPPLER_FORM_BUTTON_PUSH) {
++                    generate = m->field;
++                }
++            }
++            g_assert_cmpint(text_fields, ==, round + 1);
++            g_assert_nonnull(generate);
++            poppler_form_field_button_set_state(generate, TRUE);
++            poppler_page_free_form_field_mapping(mapping);
++            g_object_unref(page);
++            PopplerDocument *updated = poppler_document_render_xfa(doc, &err);
++            g_assert_no_error(err);
++            g_object_unref(doc);
++            doc = updated;
++            char *text = page_text(doc);
++            g_assert_nonnull(strstr(text, "Generated World & family"));
++            g_free(text);
++        }
++        g_assert_true(g_file_delete(file, NULL, &err));
++        g_assert_no_error(err);
++        g_object_unref(file);
++        g_free(uri);
++    }
++    g_object_unref(doc);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+     g_test_add_func("/xfa/render", test_render_xfa);
+     g_test_add_func("/xfa/saved-radio", test_saved_radio);
++    g_test_add_func("/xfa/saved-scripts", test_saved_scripts);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 103efb4..1f62216 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -21,6 +21,7 @@
+ #include "XFAWriter.h"
+ 
+ #include <algorithm>
++#include <charconv>
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
+@@ -412,6 +413,7 @@ bool XFAForm::build(PDFDoc *doc, std::string *error)
+     if (!readXDP(doc, &xdp, error)) {
+         return false;
+     }
++    originalXDP = xdp;
+     std::string parseError;
+     xdpRoot = XFAParseXML(xdp, &templateDom, &parseError);
+     if (!xdpRoot) {
+@@ -450,8 +452,52 @@ bool XFAForm::build(PDFDoc *doc, std::string *error)
+         }
+     }
+ 
+-    formModel = std::make_unique<XFANode>(&formDom, "form");
+-    formRoot = formModel->appendChild(instantiate(rootSubform));
++    Object saved = doc->getCatalog()->getAcroForm()->dictLookup("PopplerXFAState");
++    const bool restored = saved.isStream();
++    if (restored) {
++        std::string xml;
++        saved.getStream()->fillString(xml);
++        auto state = XFAParseXML(xml, &formDom, error);
++        XFANode *model = state ? state->firstChild("form") : nullptr;
++        if (!model || state->getClassName() != "state" || state->getAttr("version", "") != "1") {
++            *error = "invalid saved XFA state";
++            return false;
++        }
++        language = state->getAttr("language", language);
++        formModel = state->removeChild(model);
++        bool valid = true;
++        std::function<void(XFANode *)> restore = [&](XFANode *node) {
++            if (const std::string *id = node->getAttr("poppler:proto")) {
++                int serial = 0;
++                const auto result = std::from_chars(id->data(), id->data() + id->size(), serial);
++                XFANode *proto = templateDom.lookup(serial);
++                if (result.ec != std::errc() || result.ptr != id->data() + id->size() || !proto || proto->getClassName() != node->getClassName()) {
++                    valid = false;
++                } else {
++                    node->setProto(proto);
++                }
++                node->removeAttr("poppler:proto");
++            }
++            const std::string ns = node->getAttr("poppler:ns", "0");
++            node->setNamespace(ns == "1" ? XFANode::Namespace::XHTML : ns == "2" ? XFANode::Namespace::Other : XFANode::Namespace::XFA);
++            node->removeAttr("poppler:ns");
++            if (!pageSetInstance && node->getClassName() == "pageSet") {
++                pageSetInstance = node;
++            }
++            for (const auto &child : node->getChildren()) {
++                restore(child.get());
++            }
++        };
++        restore(formModel.get());
++        formRoot = formModel->firstChild("subform");
++        if (!valid || !formRoot || formRoot->getProto() != rootSubform) {
++            *error = "saved XFA state does not match its template";
++            return false;
++        }
++    } else {
++        formModel = std::make_unique<XFANode>(&formDom, "form");
++        formRoot = formModel->appendChild(instantiate(rootSubform));
++    }
+ 
+     script = std::make_unique<XFAScript>(this);
+     if (!XFAScript::isAvailable()) {
+@@ -461,12 +507,14 @@ bool XFAForm::build(PDFDoc *doc, std::string *error)
+ 
+     // Form initialization, as done by Adobe Reader: initialize events,
+     // calculations, then the document ready event.
+-    initializeSubtree(formRoot);
+-    std::vector<int> serials;
+-    preorder(formRoot, serials);
+-    for (int serial : serials) {
+-        if (XFANode *n = formDom.lookup(serial)) {
+-            fireEvent(n, "docReady");
++    if (!restored) {
++        initializeSubtree(formRoot);
++        std::vector<int> serials;
++        preorder(formRoot, serials);
++        for (int serial : serials) {
++            if (XFANode *n = formDom.lookup(serial)) {
++                fireEvent(n, "docReady");
++            }
+         }
+     }
+     runCalculations();
+@@ -1461,6 +1509,36 @@ std::string XFAForm::generatePDF(bool forPrint)
+     return pdf;
+ }
+ 
++std::string XFAForm::saveState() const
++{
++    // The original template remains unchanged. This engine-specific snapshot
++    // retains repeated instances, presence, rich text and field values, along
++    // with template references needed by instance managers after reopening.
++    std::function<std::string(const XFANode *)> serialize = [&](const XFANode *node) -> std::string {
++        if (node->isText()) {
++            return XFAEscapeXML(node->getText());
++        }
++        std::string xml = "<" + node->getClassName();
++        for (const auto &attr : node->getAttrs()) {
++            xml += " " + attr.first + "=\"" + XFAEscapeXML(attr.second) + "\"";
++        }
++        if (const XFANode *proto = node->getProto(); proto && proto->getDom() == &templateDom) {
++            xml += " poppler:proto=\"" + std::to_string(proto->getSerial()) + "\"";
++        }
++        xml += " poppler:ns=\"" + std::to_string(static_cast<int>(node->getNamespace())) + "\">";
++        for (const auto &child : node->getChildren()) {
++            xml += serialize(child.get());
++        }
++        return xml + "</" + node->getClassName() + ">";
++    };
++    return "<state version=\"1\" language=\"" + XFAEscapeXML(language) + "\" xmlns:poppler=\"https://poppler.freedesktop.org/xfa-state/1\" xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">" + serialize(formModel.get()) + "</state>";
++}
++
++std::string XFAForm::generateSavedPDF()
++{
++    return XFAWritePDF(this, getLayout(), false, false, true);
++}
++
+ XFANode *XFAForm::fieldByName(const std::string &fieldName) const
+ {
+     if (!fieldName.starts_with("xfa")) {
+@@ -1651,3 +1729,21 @@ bool XFAForm::clickBySOM(const std::string &som)
+     }
+     return clickButton("xfa" + std::to_string(node->getSerial()));
+ }
++
++bool XFAForm::setValueByFieldName(const std::string &name, const std::string &value)
++{
++    XFANode *node = fieldByName(name);
++    if (!node || (node->getClassName() != "field" && node->getClassName() != "exclGroup")) {
++        logMessage("no exported field " + name);
++        return false;
++    }
++    if (node->getClassName() == "exclGroup") {
++        XFANode *button = node->firstChild("field");
++        if (!button) {
++            logMessage("no button in " + name);
++            return false;
++        }
++        return setButtonState(name, value == "Off" ? "f" + std::to_string(button->getSerial()) : value, value != "Off");
++    }
++    return setValueBySOM(somExpression(node), value);
++}
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index d38562a..8011e0e 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -60,6 +60,10 @@ public:
+     // The print variant leaves out the objects that are relevant only on
+     // screen, such as the buttons, but keeps the same page layout.
+     std::string generatePDF(bool forPrint);
++    // A reusable form: rendered pages plus the original XFA and current DOM.
++    std::string generateSavedPDF();
++    const std::string &getXDP() const { return originalXDP; }
++    std::string saveState() const;
+ 
+     // Changes coming from the viewer. Fields are named as in the /T entries
+     // of the generated PDF. These return true when the generated PDF would
+@@ -73,6 +77,7 @@ public:
+     // subform, e.g. "MainForm.PersonGivingConsent.Names.givingName".
+     // Meant for testing and command line tools.
+     bool setValueBySOM(const std::string &som, const std::string &value);
++    bool setValueByFieldName(const std::string &name, const std::string &value);
+     bool clickBySOM(const std::string &som);
+ 
+     std::vector<XFAHostRequest> takeHostRequests();
+@@ -211,6 +216,7 @@ private:
+     std::vector<XFAHostRequest> requests;
+     std::vector<std::string> log;
+     std::string language;
++    std::string originalXDP;
+     VisibleState shownState; // of the PDF the viewer shows
+     unsigned int changeCount = 0;
+     int calcDepth = 0;
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index ddbb973..04c350a 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -491,7 +491,7 @@ Edge edgeOf(const XFANode *e)
+ class Writer
+ {
+ public:
+-    Writer(XFAForm *formA, bool forPrintA, bool blankValuesA) : form(formA), forPrint(forPrintA), blankValues(blankValuesA) { }
++    Writer(XFAForm *formA, bool forPrintA, bool blankValuesA, bool preserveXfaA) : form(formA), forPrint(forPrintA), blankValues(blankValuesA), preserveXfa(preserveXfaA) { }
+ 
+     std::string write(const XFALayoutResult &layout);
+ 
+@@ -525,6 +525,7 @@ private:
+     XFAForm *form;
+     bool forPrint;
+     bool blankValues;
++    bool preserveXfa;
+     PDFBuilder pdf;
+     PageOut *page = nullptr;
+     std::map<std::string, std::pair<int, std::string>> imageCache; // content -> object, name
+@@ -1053,15 +1054,21 @@ std::string Writer::write(const XFALayoutResult &layout)
+     // to regenerate them can replace the state dictionary with a single stream,
+     // so subsequent radio selections have no matching appearance. Text and
+     // choice widgets without appearances are generated by viewers as needed.
+-    pdf.set(acroForm, "<< /Fields [" + fieldRefs + "] /NeedAppearances false /DR << /Font " + fontDict + " >> /DA (/F4 10 Tf 0 g) >>");
+-    pdf.set(catalog, "<< /Type /Catalog /Pages " + ref(pagesObj) + " /AcroForm " + ref(acroForm) + " >>");
++    std::string xfa;
++    if (preserveXfa) {
++        const int xdp = pdf.addStream("/Filter /FlateDecode", deflate(form->getXDP()));
++        const int state = pdf.addStream("/Filter /FlateDecode", deflate(form->saveState()));
++        xfa = " /XFA " + ref(xdp) + " /PopplerXFAState " + ref(state);
++    }
++    pdf.set(acroForm, "<< /Fields [" + fieldRefs + "] /NeedAppearances false /DR << /Font " + fontDict + " >> /DA (/F4 10 Tf 0 g)" + xfa + " >>");
++    pdf.set(catalog, "<< /Type /Catalog /Pages " + ref(pagesObj) + " /AcroForm " + ref(acroForm) + (preserveXfa ? " /NeedsRendering true" : "") + " >>");
+     return pdf.finish(catalog);
+ }
+ 
+ } // namespace
+ 
+-std::string XFAWritePDF(XFAForm *form, const XFALayoutResult &layout, bool forPrint, bool blankValues)
++std::string XFAWritePDF(XFAForm *form, const XFALayoutResult &layout, bool forPrint, bool blankValues, bool preserveXfa)
+ {
+-    Writer writer(form, forPrint, blankValues);
++    Writer writer(form, forPrint, blankValues, preserveXfa);
+     return writer.write(layout);
+ }
+diff --git a/poppler/XFAWriter.h b/poppler/XFAWriter.h
+index 69eca67..89545d0 100644
+--- a/poppler/XFAWriter.h
++++ b/poppler/XFAWriter.h
+@@ -20,6 +20,6 @@
+ // forPrint leaves out the objects that are not relevant for printing.
+ // blankValues leaves out the values of interactive fields, for comparing
+ // the rest of the output.
+-std::string XFAWritePDF(XFAForm *form, const XFALayoutResult &layout, bool forPrint, bool blankValues);
++std::string XFAWritePDF(XFAForm *form, const XFALayoutResult &layout, bool forPrint, bool blankValues, bool preserveXfa = false);
+ 
+ #endif
+diff --git a/utils/pdfxfa.cc b/utils/pdfxfa.cc
+index a96ef32..21b2783 100644
+--- a/utils/pdfxfa.cc
++++ b/utils/pdfxfa.cc
+@@ -36,6 +36,8 @@ static void usage()
+             "                      lists the value or the text of an item\n"
+             "  -click <som>        click a button\n"
+             "  -print              write the print version, without on-screen objects\n"
++            "  -preserve-xfa       keep form scripts and state for later editing\n"
++            "  -set-field <name>=<value>  import an exported AcroForm field value\n"
+             "  -log                print the messages of the form and its scripts\n"
+             "  -opw <password>     owner password\n"
+             "  -upw <password>     user password\n\n"
+@@ -52,30 +54,33 @@ int main(int argc, char *argv[])
+         bool click;
+         std::string som;
+         std::string value;
++        bool byName = false;
+     };
+     std::vector<Action> actions;
+     std::vector<std::string> files;
+-    bool forPrint = false, showLog = false;
++    bool forPrint = false, showLog = false, preserveXfa = false;
+     std::optional<GooString> ownerPW, userPW;
+ 
+     for (int i = 1; i < argc; ++i) {
+         const std::string arg = argv[i];
+-        if ((arg == "-set" || arg == "-click" || arg == "-opw" || arg == "-upw") && i + 1 >= argc) {
++        if ((arg == "-set" || arg == "-set-field" || arg == "-click" || arg == "-opw" || arg == "-upw") && i + 1 >= argc) {
+             usage();
+             return 99;
+         }
+-        if (arg == "-set") {
++        if (arg == "-set" || arg == "-set-field") {
+             const std::string a = argv[++i];
+             const size_t eq = a.find('=');
+             if (eq == std::string::npos) {
+                 fprintf(stderr, "-set needs <som>=<value>\n");
+                 return 99;
+             }
+-            actions.push_back({ false, a.substr(0, eq), a.substr(eq + 1) });
++            actions.push_back({ false, a.substr(0, eq), a.substr(eq + 1), arg == "-set-field" });
+         } else if (arg == "-click") {
+             actions.push_back({ true, argv[++i], {} });
+         } else if (arg == "-print") {
+             forPrint = true;
++        } else if (arg == "-preserve-xfa") {
++            preserveXfa = true;
+         } else if (arg == "-log") {
+             showLog = true;
+         } else if (arg == "-opw") {
+@@ -89,7 +94,7 @@ int main(int argc, char *argv[])
+             files.push_back(arg);
+         }
+     }
+-    if (files.size() != 2) {
++    if (files.size() != 2 || (forPrint && preserveXfa)) {
+         usage();
+         return 99;
+     }
+@@ -113,6 +118,8 @@ int main(int argc, char *argv[])
+         const size_t logBefore = form->getLog().size();
+         if (a.click) {
+             form->clickBySOM(a.som);
++        } else if (a.byName) {
++            form->setValueByFieldName(a.som, a.value);
+         } else {
+             form->setValueBySOM(a.som, a.value);
+         }
+@@ -123,7 +130,7 @@ int main(int argc, char *argv[])
+         }
+     }
+ 
+-    const std::string pdf = form->generatePDF(forPrint);
++    const std::string pdf = preserveXfa ? form->generateSavedPDF() : form->generatePDF(forPrint);
+ 
+     if (showLog) {
+         for (const std::string &line : form->getLog()) {
+-- 
+2.43.0
+

@@ -1,0 +1,56 @@
+From eb67bdd005c4680ca8a1051160cb25c503df151e Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 15:51:12 -0700
+Subject: [PATCH 4/8] shell: Keep track of the modified state of a new document
+
+When the window got another document, it kept the "notify::modified"
+handler connected to the previous one, and showed the new document as
+unmodified until it changed again, even when it was modified already.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ shell/ev-window.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/shell/ev-window.c b/shell/ev-window.c
+index 9037eca..4a1c6e5 100644
+--- a/shell/ev-window.c
++++ b/shell/ev-window.c
+@@ -340,7 +340,10 @@ static void     ev_window_show_find_bar                 (EvWindow         *ev_wi
+ 							 gboolean          restart);
+ static void     ev_window_close_find_bar                (EvWindow         *ev_window);
+ static void     ev_window_destroy_recent_view           (EvWindow         *ev_window);
+-static void     recent_view_item_activated_cb           (EvRecentView     *recent_view,
++static void     ev_window_document_modified_cb          (EvDocument       *document,
++                                                         GParamSpec       *pspec,
++                                                         EvWindow         *ev_window);
++static void     recent_view_item_activated_cb          (EvRecentView     *recent_view,
+                                                          const char       *uri,
+                                                          EvWindow         *ev_window);
+ static void     ev_window_begin_add_annot               (EvWindow         *ev_window,
+@@ -1549,6 +1552,10 @@ ev_window_setup_document (EvWindow *ev_window)
+ 	ev_window_title_set_document (priv->title, document);
+ 	ev_window_title_set_filename (priv->title,
+ 				      priv->display_name);
++	/* The document can be modified already, like forms re-rendered
++	 * after they were filled in */
++	if (ev_document_get_modified (document))
++		ev_window_document_modified_cb (document, NULL, ev_window);
+ 
+         ev_window_ensure_settings (ev_window);
+ 
+@@ -1617,8 +1624,10 @@ ev_window_set_document (EvWindow *ev_window, EvDocument *document)
+ 	if (priv->document == document)
+ 		return;
+ 
+-	if (priv->document)
++	if (priv->document) {
++		g_clear_signal_handler (&priv->modified_handler_id, priv->document);
+ 		g_object_unref (priv->document);
++	}
+ 	priv->document = g_object_ref (document);
+ 
+ 	ev_window_set_message_area (ev_window, NULL);
+-- 
+2.43.0
+

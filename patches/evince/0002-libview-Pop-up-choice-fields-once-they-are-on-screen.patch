@@ -1,0 +1,80 @@
+From b8b75d16128066f78cbec82bb58d40e4ef290e4a Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 15:41:00 -0700
+Subject: [PATCH 2/8] libview: Pop up choice fields once they are on screen
+
+gtk_combo_box_popup() does nothing on a combo box that is not realized
+yet, so clicking a combo box form field only showed an empty combo box
+and the list of items never opened. Pop it up once the combo box is
+mapped and allocated instead.
+
+Also let long items be ellipsized, so the combo box is not wider than
+the field.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libview/ev-view.c | 34 ++++++++++++++++++++++++++++++++--
+ 1 file changed, 32 insertions(+), 2 deletions(-)
+
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 515d2e0..389cfd4 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2970,6 +2970,29 @@ ev_view_form_field_choice_popup_shown_cb (GObject    *self,
+ 			 (gpointer) data);
+ }
+ 
++static gboolean
++ev_view_form_field_choice_popup (GtkWidget *choice)
++{
++	if (gtk_widget_get_mapped (choice))
++		gtk_combo_box_popup (GTK_COMBO_BOX (choice));
++
++	return G_SOURCE_REMOVE;
++}
++
++static void
++ev_view_form_field_choice_mapped_cb (GtkWidget *choice,
++				     gpointer   user_data)
++{
++	g_signal_handlers_disconnect_by_func (choice,
++					      ev_view_form_field_choice_mapped_cb,
++					      user_data);
++	/* Wait for the combo box to be allocated */
++	g_idle_add_full (G_PRIORITY_DEFAULT_IDLE,
++			 (GSourceFunc) ev_view_form_field_choice_popup,
++			 g_object_ref (choice),
++			 g_object_unref);
++}
++
+ static GtkWidget *
+ ev_view_form_field_choice_create_widget (EvView      *view,
+ 					 EvFormField *field)
+@@ -3067,7 +3090,11 @@ ev_view_form_field_choice_create_widget (EvView      *view,
+ 		GtkCellRenderer *renderer;
+ 
+ 		choice = gtk_combo_box_new_with_model (model);
+-		renderer = gtk_cell_renderer_text_new ();
++		/* Long items must not make the combo box wider than the field */
++		renderer = g_object_new (GTK_TYPE_CELL_RENDERER_TEXT,
++					 "ellipsize", PANGO_ELLIPSIZE_END,
++					 "width-chars", 1,
++					 NULL);
+ 		gtk_cell_layout_pack_start (GTK_CELL_LAYOUT (choice),
+ 					    renderer, TRUE);
+ 		gtk_cell_layout_set_attributes (GTK_CELL_LAYOUT (choice),
+@@ -3075,7 +3102,10 @@ ev_view_form_field_choice_create_widget (EvView      *view,
+ 						"text", 0,
+ 						NULL);
+ 		gtk_combo_box_set_active (GTK_COMBO_BOX (choice), selected_item);
+-		gtk_combo_box_popup (GTK_COMBO_BOX (choice));
++		/* The combo box can only pop up once it is on screen */
++		g_signal_connect (choice, "map",
++				  G_CALLBACK (ev_view_form_field_choice_mapped_cb),
++				  NULL);
+ 
+ 		/* See issue #294 for why we use this instead of "changed" signal */
+ 		g_signal_connect (choice, "notify::popup-shown",
+-- 
+2.43.0
+

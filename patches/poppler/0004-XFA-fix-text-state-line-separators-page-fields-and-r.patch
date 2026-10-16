@@ -1,0 +1,136 @@
+From 6bc1f46aaa769f7f9aee08521760f2de462c64d4 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 14:59:56 -0700
+Subject: [PATCH 4/9] XFA: fix text state, line separators, page fields and row
+ splitting
+
+Set Tz and Tc in every text block: they are graphics state and leaked
+from one text to the next. Treat U+2028 and U+2029 as line breaks. Keep
+master page instances across layouts and lay out again when scripts
+change values embedded in rich text, so page numbers fit. Put the extra
+space of a large lineHeight above the text. Split left-to-right
+containers between rows. Name fonts ZaDb and Helv as appearance
+generators expect.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ poppler/XFALayout.cc | 52 +++++++++++++++++++++++++++++++++++++++++++-
+ poppler/XFAText.cc   |  4 +++-
+ poppler/XFAWriter.cc |  3 ++-
+ 3 files changed, 56 insertions(+), 3 deletions(-)
+
+diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
+index caa5e30..f6ce600 100644
+--- a/poppler/XFALayout.cc
++++ b/poppler/XFALayout.cc
+@@ -156,7 +156,7 @@ struct Box
+     bool keepIntact = false;
+ 
+     bool hasOwnBreak() const { return !breakTarget.empty() && !breakConsumed; }
+-    bool isFlow() const { return layout == "tb" && !keepIntact && !children.empty(); }
++    bool isFlow() const { return (layout == "tb" || layout == "lr-tb") && !keepIntact && !children.empty(); }
+     bool containsBreak() const
+     {
+         if (hasOwnBreak()) {
+@@ -522,8 +522,51 @@ Fit Layouter::splitText(Box &box, double avail, Box &head, Box &tail)
+     return Fit::Some;
+ }
+ 
++// Left-to-right containers split between rows: each row becomes one child
++// of a top-to-bottom container, rows with a single child keep the child.
++static Box rowsAsFlow(const Box &box)
++{
++    Box flow = box;
++    flow.layout = "tb";
++    flow.children.clear();
++    size_t i = 0;
++    while (i < box.children.size()) {
++        size_t j = i + 1;
++        while (j < box.children.size() && std::abs(box.children[j].y - box.children[i].y) < eps) {
++            ++j;
++        }
++        if (j - i == 1) {
++            flow.children.push_back(box.children[i]);
++        } else {
++            Box row;
++            row.node = box.node;
++            row.layout = "row";
++            row.x = 0;
++            row.y = box.children[i].y;
++            row.w = box.w;
++            for (size_t k = i; k < j; ++k) {
++                Box c = box.children[k];
++                c.y -= row.y;
++                row.h = std::max(row.h, c.y + c.h);
++                row.children.push_back(std::move(c));
++            }
++            flow.children.push_back(std::move(row));
++        }
++        i = j;
++    }
++    return flow;
++}
++
+ Fit Layouter::splitFlow(Box &box, double avail, bool pageHasContent, Box &head, Box &tail, PendingBreak &brk)
+ {
++    if (box.layout == "lr-tb") {
++        Box flow = rowsAsFlow(box);
++        const Fit f = splitFlow(flow, avail, pageHasContent, head, tail, brk);
++        if (f == Fit::All) {
++            return Fit::All;
++        }
++        return f;
++    }
+     double used = box.hasStart ? box.margin.top : 0;
+     std::vector<Box> placed;
+     std::vector<Box> rest;
+@@ -737,6 +780,13 @@ void Layouter::dropEmptyPage()
+ 
+ void Layouter::place(const Box &b, double px, double py, XFALayoutPage &lp, int pageIndex)
+ {
++    if (b.layout == "row") {
++        // A row of a split left-to-right container: only its children.
++        for (const Box &c : b.children) {
++            place(c, px + c.x, py + c.y, lp, pageIndex);
++        }
++        return;
++    }
+     XFALayoutItem item;
+     item.node = b.node;
+     item.x = px;
+diff --git a/poppler/XFAText.cc b/poppler/XFAText.cc
+index 24fe9c2..c31eb65 100644
+--- a/poppler/XFAText.cc
++++ b/poppler/XFAText.cc
+@@ -757,11 +757,13 @@ private:
+             descent = f.descent();
+         }
+         double height = ascent + descent;
++        line.baseline = y + ascent;
+         if (p.para.lineHeight > 0) {
++            // Extra line height goes above the text.
+             height = p.para.lineHeight;
++            line.baseline = y + height - descent;
+         }
+         line.top = y;
+-        line.baseline = y + ascent;
+         line.height = height;
+         line.width = 0;
+         for (const auto &r : line.runs) {
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index 2d30852..80ec5a8 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -969,7 +969,8 @@ std::string Writer::write(const XFALayoutResult &layout)
+         fontObjects[i] = pdf.add("<< /Type /Font /Subtype /Type1 /BaseFont /" + base + (symbolic ? std::string() : std::string(" /Encoding /WinAnsiEncoding")) + " >>");
+         fontDict += " /F" + std::to_string(i) + " " + ref(fontObjects[i]);
+     }
+-    fontDict += " >>";
++    // Names poppler and other viewers use when generating field appearances.
++    fontDict += " /Helv " + ref(fontObjects[4]) + " /ZaDb " + ref(fontObjects[13]) + " >>";
+ 
+     std::vector<int> pageObjs;
+     std::vector<PageOut> outs(layout.pages.size());
+-- 
+2.43.0
+

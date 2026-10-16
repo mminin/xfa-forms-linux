@@ -1,0 +1,658 @@
+From 3d27474ab109f7c19330342e941dcbabad07e782 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 15:08:51 -0700
+Subject: [PATCH 1/8] Show dynamic XFA forms
+
+PDF files with dynamic XFA forms only contain a "please use Adobe Reader"
+page. With poppler 26.11, show the pages poppler lays out from the form
+instead, with working form fields.
+
+The scripts of such forms run when their fields change, and may change
+the pages: EvDocumentForms gets rerender() for backends to return a new
+document then, which EvView puts in place of the old one, and
+take_messages(), take_urls() and take_print_request() for what the
+scripts ask the viewer to do. Push buttons now set their state, which
+clicks them in XFA forms.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/pdf/ev-poppler.c          | 101 +++++++++++++++++++++++++++++
+ backend/pdf/meson.build           |   5 ++
+ libdocument/ev-backend-info.h     |   3 +
+ libdocument/ev-document-factory.c |   6 +-
+ libdocument/ev-document-forms.c   | 104 ++++++++++++++++++++++++++++++
+ libdocument/ev-document-forms.h   |  17 +++++
+ libdocument/ev-document-private.h |  18 ++++++
+ libdocument/ev-document.c         |  29 +++++++++
+ libview/ev-view-private.h         |   3 +
+ libview/ev-view.c                 |  86 +++++++++++++++++++++++-
+ shell/ev-window.c                 |  15 +++++
+ 11 files changed, 382 insertions(+), 5 deletions(-)
+ create mode 100644 libdocument/ev-document-private.h
+
+diff --git a/backend/pdf/ev-poppler.c b/backend/pdf/ev-poppler.c
+index 81eefce..6d3af3f 100644
+--- a/backend/pdf/ev-poppler.c
++++ b/backend/pdf/ev-poppler.c
+@@ -245,6 +245,31 @@ pdf_document_save (EvDocument  *document,
+ 	return retval;
+ }
+ 
++/* Dynamic XFA forms only hold a "please use Adobe Reader" page: show the
++ * pages poppler lays out from the form instead. */
++static void
++pdf_document_render_xfa (PdfDocument *pdf_document)
++{
++#ifdef HAVE_POPPLER_XFA
++	PopplerDocument *rendered;
++	GError *error = NULL;
++
++	if (poppler_document_get_form_type (pdf_document->document) != POPPLER_FORM_TYPE_XFA ||
++	    !poppler_document_get_needs_rendering (pdf_document->document))
++		return;
++
++	rendered = poppler_document_render_xfa (pdf_document->document, &error);
++	if (!rendered) {
++		g_warning ("Could not render the XFA form: %s", error->message);
++		g_error_free (error);
++		return;
++	}
++
++	g_object_unref (pdf_document->document);
++	pdf_document->document = rendered;
++#endif
++}
++
+ static gboolean
+ pdf_document_load (EvDocument   *document,
+ 		   const char   *uri,
+@@ -261,6 +286,8 @@ pdf_document_load (EvDocument   *document,
+ 		return FALSE;
+ 	}
+ 
++	pdf_document_render_xfa (pdf_document);
++
+ 	return TRUE;
+ }
+ 
+@@ -285,6 +312,8 @@ pdf_document_load_stream (EvDocument          *document,
+                 return FALSE;
+         }
+ 
++        pdf_document_render_xfa (pdf_document);
++
+         return TRUE;
+ }
+ 
+@@ -309,6 +338,8 @@ pdf_document_load_gfile (EvDocument          *document,
+                 return FALSE;
+         }
+ 
++        pdf_document_render_xfa (pdf_document);
++
+         return TRUE;
+ }
+ 
+@@ -333,6 +364,8 @@ pdf_document_load_fd (EvDocument          *document,
+                 return FALSE;
+         }
+ 
++        pdf_document_render_xfa (pdf_document);
++
+         return TRUE;
+ }
+ 
+@@ -2538,6 +2571,70 @@ pdf_document_forms_form_field_choice_get_text (EvDocumentForms *document,
+ 	return text;
+ }
+ 
++static EvDocument *
++pdf_document_forms_rerender (EvDocumentForms *document)
++{
++#ifdef HAVE_POPPLER_XFA
++	PdfDocument *pdf_document = PDF_DOCUMENT (document);
++	PdfDocument *rerendered;
++	PopplerDocument *poppler_document;
++	GError *error = NULL;
++
++	if (!poppler_document_xfa_needs_rerender (pdf_document->document))
++		return NULL;
++
++	poppler_document = poppler_document_render_xfa (pdf_document->document, &error);
++	if (!poppler_document) {
++		g_warning ("Could not render the XFA form: %s", error->message);
++		g_error_free (error);
++		return NULL;
++	}
++
++	rerendered = g_object_new (PDF_TYPE_DOCUMENT, NULL);
++	rerendered->document = poppler_document;
++	rerendered->password = g_strdup (pdf_document->password);
++	rerendered->forms_modified = TRUE;
++	ev_document_set_modified (EV_DOCUMENT (rerendered), TRUE);
++
++	return EV_DOCUMENT (rerendered);
++#else
++	return NULL;
++#endif
++}
++
++static gchar **
++pdf_document_forms_take_messages (EvDocumentForms *document)
++{
++#ifdef HAVE_POPPLER_XFA
++	return poppler_document_xfa_take_messages (PDF_DOCUMENT (document)->document);
++#else
++	return NULL;
++#endif
++}
++
++static gchar **
++pdf_document_forms_take_urls (EvDocumentForms *document)
++{
++#ifdef HAVE_POPPLER_XFA
++	return poppler_document_xfa_take_urls (PDF_DOCUMENT (document)->document);
++#else
++	return NULL;
++#endif
++}
++
++static gboolean
++pdf_document_forms_take_print_request (EvDocumentForms *document,
++				       gint            *first_page,
++				       gint            *last_page)
++{
++#ifdef HAVE_POPPLER_XFA
++	return poppler_document_xfa_take_print_request (PDF_DOCUMENT (document)->document,
++							 first_page, last_page);
++#else
++	return FALSE;
++#endif
++}
++
+ static void
+ pdf_document_document_forms_iface_init (EvDocumentFormsInterface *iface)
+ {
+@@ -2556,6 +2653,10 @@ pdf_document_document_forms_iface_init (EvDocumentFormsInterface *iface)
+ 	iface->form_field_choice_unselect_all = pdf_document_forms_form_field_choice_unselect_all;
+ 	iface->form_field_choice_set_text = pdf_document_forms_form_field_choice_set_text;
+ 	iface->form_field_choice_get_text = pdf_document_forms_form_field_choice_get_text;
++	iface->rerender = pdf_document_forms_rerender;
++	iface->take_messages = pdf_document_forms_take_messages;
++	iface->take_urls = pdf_document_forms_take_urls;
++	iface->take_print_request = pdf_document_forms_take_print_request;
+ }
+ 
+ /* Annotations */
+diff --git a/backend/pdf/meson.build b/backend/pdf/meson.build
+index c396131..0d22470 100644
+--- a/backend/pdf/meson.build
++++ b/backend/pdf/meson.build
+@@ -5,3 +5,8 @@ backend_deps = backends_common_deps + [
+ ]
+ 
+ backend_sources = files('ev-poppler.c')
++
++# Dynamic XFA forms, poppler 26.11
++if cc.has_function('poppler_document_render_xfa', dependencies: poppler_glib_dep)
++  backend_cflags += '-DHAVE_POPPLER_XFA'
++endif
+diff --git a/libdocument/ev-backend-info.h b/libdocument/ev-backend-info.h
+index 9031b2f..251dbb3 100644
+--- a/libdocument/ev-backend-info.h
++++ b/libdocument/ev-backend-info.h
+@@ -29,6 +29,9 @@ G_BEGIN_DECLS
+ 
+ typedef struct _EvBackendInfo EvBackendInfo;
+ 
++/* The key of the #EvBackendInfo the factory attaches to the documents it creates */
++#define EV_BACKEND_INFO_DATA_KEY "ev-backend-info"
++
+ struct _EvBackendInfo {
+         /* These two fields must be first for API/ABI compat with EvTypeInfo */
+         gchar       *type_desc;
+diff --git a/libdocument/ev-document-factory.c b/libdocument/ev-document-factory.c
+index 4eb21f0..6f9fba1 100644
+--- a/libdocument/ev-document-factory.c
++++ b/libdocument/ev-document-factory.c
+@@ -35,8 +35,6 @@
+ 
+ /* Backends manager */
+ 
+-#define BACKEND_DATA_KEY "ev-backend-info"
+-
+ static GList *ev_backends_list = NULL;
+ static GHashTable *ev_module_hash = NULL;
+ static gchar *ev_backends_dir = NULL;
+@@ -72,7 +70,7 @@ get_backend_info_for_document (EvDocument *document)
+ {
+         EvBackendInfo *info;
+ 
+-        info = g_object_get_data (G_OBJECT (document), BACKEND_DATA_KEY);
++        info = g_object_get_data (G_OBJECT (document), EV_BACKEND_INFO_DATA_KEY);
+ 
+         g_warn_if_fail (info != NULL);
+         return info;
+@@ -158,7 +156,7 @@ ev_document_factory_new_document_for_mime_type (const gchar *mime_type,
+ 
+ 	document = g_object_new (backend_type, NULL);
+ 
+-        g_object_set_data_full (G_OBJECT (document), BACKEND_DATA_KEY,
++        g_object_set_data_full (G_OBJECT (document), EV_BACKEND_INFO_DATA_KEY,
+                                 _ev_backend_info_ref (info),
+                                 (GDestroyNotify) _ev_backend_info_unref);
+ 
+diff --git a/libdocument/ev-document-forms.c b/libdocument/ev-document-forms.c
+index 53c9bab..a68d0ef 100644
+--- a/libdocument/ev-document-forms.c
++++ b/libdocument/ev-document-forms.c
+@@ -20,6 +20,7 @@
+ 
+ #include <config.h>
+ #include "ev-document-forms.h"
++#include "ev-document-private.h"
+ 
+ G_DEFINE_INTERFACE (EvDocumentForms, ev_document_forms, 0)
+ 
+@@ -169,3 +170,106 @@ ev_document_forms_form_field_choice_get_text (EvDocumentForms   *document_forms,
+ 
+ 	return iface->form_field_choice_get_text (document_forms, field);
+ }
++
++/**
++ * ev_document_forms_rerender:
++ * @document_forms: an #EvDocumentForms
++ *
++ * Some documents lay out their pages from their forms, such as PDF files
++ * with dynamic XFA forms, so changing their fields can change their pages.
++ * When the latest changes did, this returns a new document showing the
++ * current state of the form, to be shown instead of @document_forms.
++ *
++ * Returns: (transfer full) (nullable): the new document, or %NULL when
++ *   the pages of @document_forms are up to date
++ *
++ * Since: 49.0
++ */
++EvDocument *
++ev_document_forms_rerender (EvDocumentForms *document_forms)
++{
++	EvDocumentFormsInterface *iface = EV_DOCUMENT_FORMS_GET_IFACE (document_forms);
++	EvDocument *rerendered;
++
++	if (!iface->rerender)
++		return NULL;
++
++	rerendered = iface->rerender (document_forms);
++	if (rerendered)
++		_ev_document_set_up_from (rerendered, EV_DOCUMENT (document_forms));
++
++	return rerendered;
++}
++
++/**
++ * ev_document_forms_take_messages:
++ * @document_forms: an #EvDocumentForms
++ *
++ * Returns the messages the scripts of the form showed since the last call.
++ *
++ * Returns: (transfer full) (array zero-terminated=1) (nullable): the
++ *   messages, or %NULL. Free with g_strfreev().
++ *
++ * Since: 49.0
++ */
++gchar **
++ev_document_forms_take_messages (EvDocumentForms *document_forms)
++{
++	EvDocumentFormsInterface *iface = EV_DOCUMENT_FORMS_GET_IFACE (document_forms);
++
++	return iface->take_messages ? iface->take_messages (document_forms) : NULL;
++}
++
++/**
++ * ev_document_forms_take_urls:
++ * @document_forms: an #EvDocumentForms
++ *
++ * Returns the URLs the scripts of the form asked to open since the last
++ * call.
++ *
++ * Returns: (transfer full) (array zero-terminated=1) (nullable): the URLs,
++ *   or %NULL. Free with g_strfreev().
++ *
++ * Since: 49.0
++ */
++gchar **
++ev_document_forms_take_urls (EvDocumentForms *document_forms)
++{
++	EvDocumentFormsInterface *iface = EV_DOCUMENT_FORMS_GET_IFACE (document_forms);
++
++	return iface->take_urls ? iface->take_urls (document_forms) : NULL;
++}
++
++/**
++ * ev_document_forms_take_print_request:
++ * @document_forms: an #EvDocumentForms
++ * @first_page: (out) (optional): return location for the first page to print,
++ *   0-based, or -1 for all pages
++ * @last_page: (out) (optional): return location for the last page to print,
++ *   0-based, or -1 for all pages
++ *
++ * Returns whether the scripts of the form asked to print the document
++ * since the last call.
++ *
++ * Returns: %TRUE if printing was requested
++ *
++ * Since: 49.0
++ */
++gboolean
++ev_document_forms_take_print_request (EvDocumentForms *document_forms,
++				      gint            *first_page,
++				      gint            *last_page)
++{
++	EvDocumentFormsInterface *iface = EV_DOCUMENT_FORMS_GET_IFACE (document_forms);
++	gint first = -1, last = -1;
++	gboolean requested;
++
++	requested = iface->take_print_request ?
++		iface->take_print_request (document_forms, &first, &last) : FALSE;
++	if (first_page)
++		*first_page = first;
++	if (last_page)
++		*last_page = last;
++
++	return requested;
++}
+diff --git a/libdocument/ev-document-forms.h b/libdocument/ev-document-forms.h
+index 21d812c..f823378 100644
+--- a/libdocument/ev-document-forms.h
++++ b/libdocument/ev-document-forms.h
+@@ -79,6 +79,12 @@ struct _EvDocumentFormsInterface
+ 							       EvFormField       *field);
+ 	void           (* reset_form)                         (EvDocumentForms   *document_forms,
+ 							       EvLinkAction      *action);
++	EvDocument    *(* rerender)                           (EvDocumentForms   *document_forms);
++	gchar        **(* take_messages)                      (EvDocumentForms   *document_forms);
++	gchar        **(* take_urls)                          (EvDocumentForms   *document_forms);
++	gboolean       (* take_print_request)                 (EvDocumentForms   *document_forms,
++							       gint              *first_page,
++							       gint              *last_page);
+ };
+ 
+ EV_PUBLIC
+@@ -136,4 +142,15 @@ EV_PUBLIC
+ void           ev_document_forms_reset_form                         (EvDocumentForms   *document_forms,
+ 								     EvLinkAction      *action);
+ 
++EV_PUBLIC
++EvDocument    *ev_document_forms_rerender                           (EvDocumentForms   *document_forms);
++EV_PUBLIC
++gchar        **ev_document_forms_take_messages                      (EvDocumentForms   *document_forms);
++EV_PUBLIC
++gchar        **ev_document_forms_take_urls                          (EvDocumentForms   *document_forms);
++EV_PUBLIC
++gboolean       ev_document_forms_take_print_request                 (EvDocumentForms   *document_forms,
++								     gint              *first_page,
++								     gint              *last_page);
++
+ G_END_DECLS
+diff --git a/libdocument/ev-document-private.h b/libdocument/ev-document-private.h
+new file mode 100644
+index 0000000..91746f3
+--- /dev/null
++++ b/libdocument/ev-document-private.h
+@@ -0,0 +1,18 @@
++/* this file is part of evince, a gnome document viewer
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#pragma once
++
++#include "ev-document.h"
++
++G_BEGIN_DECLS
++
++/* Sets up @document, created by its backend from @source rather than
++ * loaded from a file, as if it had been loaded from the file of @source. */
++G_GNUC_INTERNAL
++void _ev_document_set_up_from (EvDocument *document,
++			       EvDocument *source);
++
++G_END_DECLS
+diff --git a/libdocument/ev-document.c b/libdocument/ev-document.c
+index 952f557..e93ee1a 100644
+--- a/libdocument/ev-document.c
++++ b/libdocument/ev-document.c
+@@ -27,7 +27,9 @@
+ #include <sys/stat.h>
+ #include <errno.h>
+ 
++#include "ev-backend-info.h"
+ #include "ev-document.h"
++#include "ev-document-private.h"
+ #include "ev-document-misc.h"
+ #include "synctex_parser.h"
+ 
+@@ -436,6 +438,33 @@ ev_document_load_full (EvDocument           *document,
+ 	return retval;
+ }
+ 
++void
++_ev_document_set_up_from (EvDocument *document,
++			  EvDocument *source)
++{
++	EvDocumentPrivate *priv = GET_PRIVATE (document);
++	EvDocumentPrivate *source_priv = GET_PRIVATE (source);
++	EvBackendInfo     *info;
++	const gchar       *uri_uncompressed;
++
++	priv->info = _ev_document_get_info (document);
++	priv->n_pages = _ev_document_get_n_pages (document);
++	ev_document_setup_cache (document);
++	priv->uri = g_strdup (source_priv->uri);
++	priv->file_size = source_priv->file_size;
++
++	info = g_object_get_data (G_OBJECT (source), EV_BACKEND_INFO_DATA_KEY);
++	if (info)
++		g_object_set_data_full (G_OBJECT (document), EV_BACKEND_INFO_DATA_KEY,
++					_ev_backend_info_ref (info),
++					(GDestroyNotify) _ev_backend_info_unref);
++	/* The source still owns, and removes, the uncompressed file */
++	uri_uncompressed = g_object_get_data (G_OBJECT (source), "uri-uncompressed");
++	if (uri_uncompressed)
++		g_object_set_data_full (G_OBJECT (document), "uri-uncompressed",
++					g_strdup (uri_uncompressed), g_free);
++}
++
+ /**
+  * ev_document_load:
+  * @document: a #EvDocument
+diff --git a/libview/ev-view-private.h b/libview/ev-view-private.h
+index c3fd9a0..9bf7ed8 100644
+--- a/libview/ev-view-private.h
++++ b/libview/ev-view-private.h
+@@ -234,6 +234,9 @@ typedef struct _EvViewPrivate {
+ 	guint focused_element_page;
+ 	guint child_focus_idle_id;
+ 
++	/* Forms whose scripts change the document, such as XFA forms */
++	guint form_changes_idle_id;
++
+ 	/* Synctex */
+ 	EvMapping *synctex_result;
+ 
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index b4729c4..515d2e0 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2532,6 +2532,81 @@ ev_view_form_field_destroy (GtkWidget *widget,
+ 	g_idle_add_once ((GSourceOnceFunc)ev_view_remove_all_form_fields, view);
+ }
+ 
++/* Some forms run scripts when their fields change: they can ask to show
++ * messages, open URLs or print, and can change the pages of the document,
++ * which then has to be replaced. */
++static void
++ev_view_apply_form_changes (EvView *view)
++{
++	EvViewPrivate *priv = GET_PRIVATE (view);
++	EvDocumentForms *forms;
++	EvDocument *rerendered;
++	gchar **strv;
++	gint first_page, last_page;
++
++	priv->form_changes_idle_id = 0;
++
++	if (!priv->document || !EV_IS_DOCUMENT_FORMS (priv->document))
++		return;
++
++	forms = EV_DOCUMENT_FORMS (g_object_ref (priv->document));
++
++	strv = ev_document_forms_take_urls (forms);
++	for (gchar **url = strv; url && *url; url++) {
++		g_autofree gchar *uri = strstr (*url, "://") ? g_strdup (*url) : g_strconcat ("https://", *url, NULL);
++		EvLinkAction *action = ev_link_action_new_external_uri (uri);
++		EvLink *link = ev_link_new (NULL, action);
++
++		ev_view_handle_link (view, link);
++		g_object_unref (link);
++		g_object_unref (action);
++	}
++	g_strfreev (strv);
++
++	strv = ev_document_forms_take_messages (forms);
++	if (strv && *strv) {
++		g_autofree gchar *text = g_strjoinv ("\n\n", strv);
++#if GTK_CHECK_VERSION (4, 10, 0)
++		GtkAlertDialog *dialog = gtk_alert_dialog_new ("%s", text);
++		GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
++
++		gtk_alert_dialog_show (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL);
++		g_object_unref (dialog);
++#else
++		g_message ("%s", text);
++#endif
++	}
++	g_strfreev (strv);
++
++	/* The model keeps the current page, and the view its position on it. */
++	rerendered = ev_document_forms_rerender (forms);
++	if (rerendered) {
++		ev_document_model_set_document (priv->model, rerendered);
++		g_object_unref (rerendered);
++	}
++
++	if (ev_document_forms_take_print_request (forms, &first_page, &last_page)) {
++		if (first_page >= 0 && last_page >= first_page)
++			gtk_widget_activate_action (GTK_WIDGET (view), "win.print-range",
++						    "(ii)", first_page + 1, last_page + 1);
++		else
++			gtk_widget_activate_action (GTK_WIDGET (view), "win.print", NULL);
++	}
++
++	g_object_unref (forms);
++}
++
++static void
++ev_view_form_changed (EvView *view)
++{
++	EvViewPrivate *priv = GET_PRIVATE (view);
++
++	/* In an idle: replacing the document destroys the field widgets,
++	 * and we may be in a signal handler of one of them. */
++	if (!priv->form_changes_idle_id)
++		priv->form_changes_idle_id = g_idle_add_once ((GSourceOnceFunc) ev_view_apply_form_changes, view);
++}
++
+ static void
+ ev_view_form_field_button_toggle (EvView      *view,
+ 				  EvFormField *field)
+@@ -2543,8 +2618,13 @@ ev_view_form_field_button_toggle (EvView      *view,
+ 	GList             *l;
+ 	EvFormFieldButton *field_button = EV_FORM_FIELD_BUTTON (field);
+ 
+-	if (field_button->type == EV_FORM_FIELD_BUTTON_PUSH)
++	if (field_button->type == EV_FORM_FIELD_BUTTON_PUSH) {
++		/* Clicks forms that act on them, such as XFA forms. */
++		ev_document_forms_form_field_button_set_state (EV_DOCUMENT_FORMS (priv->document),
++							       field, TRUE);
++		ev_view_form_changed (view);
+ 		return;
++	}
+ 
+ 	state = ev_document_forms_form_field_button_get_state (EV_DOCUMENT_FORMS (priv->document),
+ 							       field);
+@@ -2594,6 +2674,7 @@ ev_view_form_field_button_toggle (EvView      *view,
+ 
+ 	ev_view_reload_page (view, field->page->index, region);
+ 	cairo_region_destroy (region);
++	ev_view_form_changed (view);
+ }
+ 
+ static GtkWidget *
+@@ -2639,6 +2720,7 @@ ev_view_form_field_text_save (EvView    *view,
+ 		field->changed = FALSE;
+ 		ev_view_reload_page (view, field->page->index, field_region);
+ 		cairo_region_destroy (field_region);
++		ev_view_form_changed (view);
+ 	}
+ }
+ 
+@@ -2783,6 +2865,7 @@ ev_view_form_field_choice_save (EvView    *view,
+ 		field->changed = FALSE;
+ 		ev_view_reload_page (view, field->page->index, field_region);
+ 		cairo_region_destroy (field_region);
++		ev_view_form_changed (view);
+ 	}
+ }
+ 
+@@ -7474,6 +7557,7 @@ ev_view_dispose (GObject *object)
+ 	g_clear_handle_id (&priv->drag_info.release_timeout_id, g_source_remove);
+ 	g_clear_handle_id (&priv->cursor_blink_timeout_id, g_source_remove);
+ 	g_clear_handle_id (&priv->child_focus_idle_id, g_source_remove);
++	g_clear_handle_id (&priv->form_changes_idle_id, g_source_remove);
+ 
+ 	if (priv->link_preview.job) {
+ 		ev_job_cancel (priv->link_preview.job);
+diff --git a/shell/ev-window.c b/shell/ev-window.c
+index a8f616f..5c563b7 100644
+--- a/shell/ev-window.c
++++ b/shell/ev-window.c
+@@ -454,6 +454,8 @@ ev_window_update_actions_sensitivity (EvWindow *ev_window)
+ 				      ok_to_copy && !recent_view_mode);
+ 	ev_window_set_action_enabled (ev_window, "print", has_pages &&
+ 				      ok_to_print && !recent_view_mode);
++	ev_window_set_action_enabled (ev_window, "print-range", has_pages &&
++				      ok_to_print && !recent_view_mode);
+ 	ev_window_set_action_enabled (ev_window, "show-properties",
+ 				      has_document && has_properties &&
+ 				      !recent_view_mode);
+@@ -3708,6 +3710,18 @@ ev_window_cmd_file_print (GSimpleAction *action,
+ 	ev_window_print (ev_window);
+ }
+ 
++static void
++ev_window_cmd_file_print_range (GSimpleAction *action,
++				GVariant      *parameter,
++				gpointer       user_data)
++{
++	EvWindow *ev_window = user_data;
++	gint first_page, last_page;
++
++	g_variant_get (parameter, "(ii)", &first_page, &last_page);
++	ev_window_print_range (ev_window, first_page, last_page);
++}
++
+ static void
+ ev_window_cmd_file_properties (GSimpleAction *action,
+ 			       GVariant      *state,
+@@ -5955,6 +5969,7 @@ static const GActionEntry actions[] = {
+ 	{ "send-to", ev_window_cmd_send_to },
+ 	{ "open-containing-folder", ev_window_cmd_open_containing_folder },
+ 	{ "print", ev_window_cmd_file_print },
++	{ "print-range", ev_window_cmd_file_print_range, "(ii)" },
+ 	{ "copy", ev_window_cmd_edit_copy },
+ 	{ "select-all", ev_window_cmd_edit_select_all },
+ 	{ "go-previous-page", ev_window_cmd_go_previous_page },
+-- 
+2.43.0
+

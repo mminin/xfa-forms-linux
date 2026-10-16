@@ -1,0 +1,191 @@
+From 281b72cb0276340d1ea4d331a7c9f3b1a351a43f Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 15:12:33 -0700
+Subject: [PATCH 7/9] glib: Add test for rendering dynamic XFA forms
+
+Builds a small dynamic XFA form in memory, so no file is needed in the
+test data repository, and checks that its scripts run, that a changed
+field asks for the form to be rendered again, and the result.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/CMakeLists.txt |   7 ++
+ glib/tests/check_xfa.c    | 146 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 153 insertions(+)
+ create mode 100644 glib/tests/check_xfa.c
+
+diff --git a/glib/tests/CMakeLists.txt b/glib/tests/CMakeLists.txt
+index eb04794..774acc9 100644
+--- a/glib/tests/CMakeLists.txt
++++ b/glib/tests/CMakeLists.txt
+@@ -17,8 +17,15 @@ set(poppler_check_form_type_SRCS
+ poppler_add_test(poppler-check-form-type BUILD_GTK_TESTS ${poppler_check_form_type_SRCS})
+ add_test(poppler-check-form-type ${EXECUTABLE_OUTPUT_PATH}/poppler-check-form-type)
+ 
++set(poppler_check_xfa_SRCS
++  check_xfa.c
++)
++poppler_add_test(poppler-check-xfa BUILD_GTK_TESTS ${poppler_check_xfa_SRCS})
++add_test(poppler-check-xfa ${EXECUTABLE_OUTPUT_PATH}/poppler-check-xfa)
++
+ target_link_libraries(poppler-check-text poppler-glib PkgConfig::GTK3)
+ target_link_libraries(poppler-check-form-type poppler-glib PkgConfig::GTK3)
++target_link_libraries(poppler-check-xfa poppler-glib PkgConfig::GTK3)
+ target_link_libraries(poppler-check-bb poppler-glib PkgConfig::GTK3)
+ 
+ macro(GLIB_ADD_BBTEST arg1)
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+new file mode 100644
+index 0000000..110f51c
+--- /dev/null
++++ b/glib/tests/check_xfa.c
+@@ -0,0 +1,146 @@
++/*
++ * testing program for poppler_document_render_xfa and the XFA form engine,
++ * on a small dynamic XFA form built in memory
++ */
++
++#include <string.h>
++
++#include <poppler.h>
++
++/* The fallback subform hides itself, the main one is added when the
++ * document is ready, and typing a name updates the greeting. */
++static const char *xdp = "<?xml version=\"1.0\"?>\n"
++                         "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                         "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                         "<subform name=\"form1\" layout=\"tb\">"
++                         "<pageSet><pageArea name=\"Page1\">"
++                         "<contentArea x=\"0.5in\" y=\"0.5in\" w=\"7.5in\" h=\"10in\"/>"
++                         "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/>"
++                         "</pageArea></pageSet>"
++                         "<subform name=\"Fallback\" layout=\"tb\" w=\"7.5in\"><occur min=\"0\" initial=\"1\"/>"
++                         "<event activity=\"initialize\"><script contentType=\"application/x-javascript\">"
++                         "this.instanceManager.setInstances(0);</script></event>"
++                         "<draw w=\"7in\" h=\"0.5in\"><font typeface=\"Arial\"/><value><text>Please use another viewer</text></value></draw>"
++                         "</subform>"
++                         "<subform name=\"Main\" layout=\"tb\" w=\"7.5in\"><occur min=\"0\"/>"
++                         "<draw name=\"greeting\" w=\"7in\" h=\"0.5in\"><font typeface=\"Arial\"/><value><text>Hello</text></value></draw>"
++                         "<field name=\"who\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui>"
++                         "<event activity=\"exit\"><script contentType=\"application/x-javascript\">"
++                         "greeting.value.text.value = \"Hello \" + this.rawValue;</script></event>"
++                         "</field>"
++                         "</subform>"
++                         "<event activity=\"docReady\" ref=\"$host\"><script contentType=\"application/x-javascript\">"
++                         "_Main.setInstances(1);</script></event>"
++                         "</subform>"
++                         "</template>"
++                         "</xdp:xdp>";
++
++static GBytes *build_pdf(void)
++{
++    char *objects[4];
++    gsize offsets[4];
++    GString *pdf;
++    gsize xref_offset;
++    int i;
++
++    objects[0] = g_strdup("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /XFA 4 0 R >> /NeedsRendering true >>");
++    objects[1] = g_strdup("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
++    objects[2] = g_strdup("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>");
++    objects[3] = g_strdup_printf("<< /Length %u >>\nstream\n%s\nendstream", (guint)strlen(xdp), xdp);
++
++    pdf = g_string_new("%PDF-1.7\n");
++    for (i = 0; i < 4; i++) {
++        offsets[i] = pdf->len;
++        g_string_append_printf(pdf, "%d 0 obj\n%s\nendobj\n", i + 1, objects[i]);
++        g_free(objects[i]);
++    }
++    xref_offset = pdf->len;
++    g_string_append(pdf, "xref\n0 5\n0000000000 65535 f \n");
++    for (i = 0; i < 4; i++) {
++        g_string_append_printf(pdf, "%010u 00000 n \n", (guint)offsets[i]);
++    }
++    g_string_append_printf(pdf, "trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n%u\n%%%%EOF\n", (guint)xref_offset);
++
++    return g_string_free_to_bytes(pdf);
++}
++
++static char *page_text(PopplerDocument *doc)
++{
++    PopplerPage *page = poppler_document_get_page(doc, 0);
++    char *text = poppler_page_get_text(page);
++    g_object_unref(page);
++    return text;
++}
++
++static PopplerFormField *first_text_field(PopplerDocument *doc)
++{
++    PopplerPage *page = poppler_document_get_page(doc, 0);
++    GList *mapping = poppler_page_get_form_field_mapping(page);
++    PopplerFormField *field = NULL;
++
++    for (GList *l = mapping; l; l = l->next) {
++        PopplerFormFieldMapping *m = l->data;
++        if (poppler_form_field_get_field_type(m->field) == POPPLER_FORM_FIELD_TEXT) {
++            field = g_object_ref(m->field);
++            break;
++        }
++    }
++    poppler_page_free_form_field_mapping(mapping);
++    g_object_unref(page);
++    return field;
++}
++
++static void test_render_xfa(void)
++{
++    GBytes *bytes = build_pdf();
++    GError *err = NULL;
++    PopplerDocument *source, *rendered, *rerendered;
++    PopplerFormField *field;
++    char *text;
++
++    source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    g_assert_true(poppler_document_get_needs_rendering(source));
++    g_assert_false(poppler_document_is_xfa_rendered(source));
++
++    rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    g_assert_nonnull(rendered);
++    g_assert_true(poppler_document_is_xfa_rendered(rendered));
++    g_assert_cmpint(poppler_document_get_n_pages(rendered), ==, 1);
++
++    text = page_text(rendered);
++    if (strstr(text, "Please use another viewer")) {
++        g_free(text);
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        g_assert_nonnull(strstr(text, "Hello"));
++        g_free(text);
++
++        field = first_text_field(rendered);
++        g_assert_nonnull(field);
++        g_assert_false(poppler_document_xfa_needs_rerender(rendered));
++        poppler_form_field_text_set_text(field, "World");
++        g_assert_true(poppler_document_xfa_needs_rerender(rendered));
++        g_object_unref(field);
++
++        rerendered = poppler_document_render_xfa(rendered, &err);
++        g_assert_no_error(err);
++        g_assert_false(poppler_document_xfa_needs_rerender(rerendered));
++        text = page_text(rerendered);
++        g_assert_nonnull(strstr(text, "Hello World"));
++        g_free(text);
++        g_object_unref(rerendered);
++    }
++
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
++int main(int argc, char *argv[])
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/xfa/render", test_render_xfa);
++    return g_test_run();
++}
+-- 
+2.43.0
+

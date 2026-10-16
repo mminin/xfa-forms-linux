@@ -1,0 +1,294 @@
+From 2b4b7dd177db04ee15a5319a725cd6b0ce52ab84 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 13 Oct 2026 16:02:51 -0700
+Subject: [PATCH 6/8] libview: Keep editing a form field when the form
+ re-renders
+
+When a field change makes the form scripts re-render the document, the
+widget of the field the user had just clicked (for example the next
+text field or a combo box) went away with the old document. Remember
+its name, give the view the focus so it does not move on to another
+field, and focus the field of the same name once the page of the new
+document is loaded. Fields now carry their fully qualified name for
+this.
+
+Also pop combo boxes up once they are allocated, in a tick callback, so
+the list opens next to the field.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/pdf/ev-poppler.c            |  1 +
+ libdocument/ev-form-field-private.h |  5 ++
+ libdocument/ev-form-field.c         | 44 ++++++++++++++
+ libview/ev-view-private.h           |  2 +
+ libview/ev-view.c                   | 91 ++++++++++++++++++++++-------
+ 5 files changed, 123 insertions(+), 20 deletions(-)
+
+diff --git a/backend/pdf/ev-poppler.c b/backend/pdf/ev-poppler.c
+index 6d3af3f..b0e141b 100644
+--- a/backend/pdf/ev-poppler.c
++++ b/backend/pdf/ev-poppler.c
+@@ -2305,6 +2305,7 @@ ev_form_field_from_poppler_field (PdfDocument      *pdf_document,
+ 	ev_field->font_size = font_size;
+ 	ev_field->is_read_only = is_read_only;
+ 	ev_form_field_set_alternate_name (ev_field, alt_ui_name);
++	ev_form_field_set_name (ev_field, poppler_form_field_get_name (poppler_field));
+ 
+ 	if (action)
+ 		ev_field->activation_link = ev_link_from_action (pdf_document, action);
+diff --git a/libdocument/ev-form-field-private.h b/libdocument/ev-form-field-private.h
+index ef40cf6..512f39a 100644
+--- a/libdocument/ev-form-field-private.h
++++ b/libdocument/ev-form-field-private.h
+@@ -37,5 +37,10 @@ gchar *ev_form_field_get_alternate_name (EvFormField *field);
+ EV_PRIVATE
+ void   ev_form_field_set_alternate_name (EvFormField *field,
+ 					 gchar       *alternative_text);
++EV_PRIVATE
++const gchar *ev_form_field_get_name     (EvFormField *field);
++EV_PRIVATE
++void   ev_form_field_set_name           (EvFormField *field,
++					 gchar       *name);
+ 
+ G_END_DECLS
+diff --git a/libdocument/ev-form-field.c b/libdocument/ev-form-field.c
+index 7723ba2..2449ce3 100644
+--- a/libdocument/ev-form-field.c
++++ b/libdocument/ev-form-field.c
+@@ -27,6 +27,7 @@
+ typedef struct
+ {
+ 	gchar   *alt_ui_name;
++	gchar   *name;
+ } EvFormFieldPrivate;
+ 
+ static void ev_form_field_init                 (EvFormField               *field);
+@@ -56,6 +57,7 @@ ev_form_field_init (EvFormField *field)
+ 	field->changed = FALSE;
+ 	field->is_read_only = FALSE;
+ 	priv->alt_ui_name = NULL;
++	priv->name = NULL;
+ }
+ 
+ static void
+@@ -67,6 +69,7 @@ ev_form_field_finalize (GObject *object)
+ 	g_clear_object (&field->page);
+ 	g_clear_object (&field->activation_link);
+ 	g_clear_pointer (&priv->alt_ui_name, g_free);
++	g_clear_pointer (&priv->name, g_free);
+ 
+ 	(* G_OBJECT_CLASS (ev_form_field_parent_class)->finalize) (object);
+ }
+@@ -130,6 +133,47 @@ ev_form_field_set_alternate_name (EvFormField *field,
+ 	priv->alt_ui_name = alternative_text;
+ }
+ 
++/*
++ * ev_form_field_get_name:
++ * @field: a #EvFormField
++ *
++ * Gets the fully qualified name of @field, which identifies it in its
++ * document.
++ *
++ * Returns: (nullable): the name of @field
++ */
++const gchar *
++ev_form_field_get_name (EvFormField *field)
++{
++	EvFormFieldPrivate *priv;
++
++	g_return_val_if_fail (EV_IS_FORM_FIELD (field), NULL);
++
++	priv = GET_FIELD_PRIVATE (field);
++
++	return priv->name;
++}
++
++/*
++ * ev_form_field_set_name:
++ * @field: a #EvFormField
++ * @name: (transfer full) (nullable): the fully qualified name of @field
++ *
++ * Sets the fully qualified name of @field.
++ */
++void
++ev_form_field_set_name (EvFormField *field,
++			gchar       *name)
++{
++	EvFormFieldPrivate *priv;
++
++	g_return_if_fail (EV_IS_FORM_FIELD (field));
++
++	priv = GET_FIELD_PRIVATE (field);
++	g_free (priv->name);
++	priv->name = name;
++}
++
+ static void
+ ev_form_field_text_finalize (GObject *object)
+ {
+diff --git a/libview/ev-view-private.h b/libview/ev-view-private.h
+index 9bf7ed8..31fa8ea 100644
+--- a/libview/ev-view-private.h
++++ b/libview/ev-view-private.h
+@@ -236,6 +236,8 @@ typedef struct _EvViewPrivate {
+ 
+ 	/* Forms whose scripts change the document, such as XFA forms */
+ 	guint form_changes_idle_id;
++	/* The field to edit again once the changed document is loaded */
++	gchar *refocus_field_name;
+ 
+ 	/* Synctex */
+ 	EvMapping *synctex_result;
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 389cfd4..f219a0c 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2532,6 +2532,51 @@ ev_view_form_field_destroy (GtkWidget *widget,
+ 	g_idle_add_once ((GSourceOnceFunc)ev_view_remove_all_form_fields, view);
+ }
+ 
++/* The name of the text or choice field being edited, if any */
++static gchar *
++ev_view_get_edited_field_name (EvView *view)
++{
++	GtkWidget *child;
++
++	for (child = gtk_widget_get_first_child (GTK_WIDGET (view));
++	     child != NULL;
++	     child = gtk_widget_get_next_sibling (child)) {
++		EvFormField *field = g_object_get_data (G_OBJECT (child), "form-field");
++
++		if (field && (EV_IS_FORM_FIELD_TEXT (field) || EV_IS_FORM_FIELD_CHOICE (field)) &&
++		    ev_form_field_get_name (field))
++			return g_strdup (ev_form_field_get_name (field));
++	}
++
++	return NULL;
++}
++
++static void
++ev_view_page_cached_cb (EvPageCache *page_cache,
++			gint         page,
++			EvView      *view)
++{
++	EvViewPrivate *priv = GET_PRIVATE (view);
++	EvMappingList *mapping_list;
++	GList *l;
++
++	if (!priv->refocus_field_name)
++		return;
++
++	mapping_list = ev_page_cache_get_form_field_mapping (page_cache, page);
++	for (l = mapping_list ? ev_mapping_list_get_list (mapping_list) : NULL; l; l = l->next) {
++		EvFormField *field = ((EvMapping *) l->data)->data;
++
++		if ((EV_IS_FORM_FIELD_TEXT (field) || EV_IS_FORM_FIELD_CHOICE (field)) &&
++		    g_strcmp0 (ev_form_field_get_name (field), priv->refocus_field_name) == 0) {
++			g_clear_pointer (&priv->refocus_field_name, g_free);
++			ev_view_remove_all_form_fields (view);
++			_ev_view_focus_form_field (view, field);
++			break;
++		}
++	}
++}
++
+ /* Some forms run scripts when their fields change: they can ask to show
+  * messages, open URLs or print, and can change the pages of the document,
+  * which then has to be replaced. */
+@@ -2581,8 +2626,16 @@ ev_view_apply_form_changes (EvView *view)
+ 	/* The model keeps the current page, and the view its position on it. */
+ 	rerendered = ev_document_forms_rerender (forms);
+ 	if (rerendered) {
++		g_autofree gchar *edited = ev_view_get_edited_field_name (view);
++
++		/* Do not let the focus move on to another field when the
++		 * widget of the edited one goes away with the document */
++		if (edited)
++			gtk_widget_grab_focus (GTK_WIDGET (view));
+ 		ev_document_model_set_document (priv->model, rerendered);
+ 		g_object_unref (rerendered);
++		/* Keep editing the field the user went to */
++		priv->refocus_field_name = g_steal_pointer (&edited);
+ 	}
+ 
+ 	if (ev_document_forms_take_print_request (forms, &first_page, &last_page)) {
+@@ -2971,26 +3024,18 @@ ev_view_form_field_choice_popup_shown_cb (GObject    *self,
+ }
+ 
+ static gboolean
+-ev_view_form_field_choice_popup (GtkWidget *choice)
++ev_view_form_field_choice_popup_tick_cb (GtkWidget     *choice,
++					 GdkFrameClock *frame_clock,
++					 gpointer       user_data)
+ {
+-	if (gtk_widget_get_mapped (choice))
+-		gtk_combo_box_popup (GTK_COMBO_BOX (choice));
++	/* Wait for the combo box to be allocated, the popup is placed
++	 * next to it */
++	if (gtk_widget_get_width (choice) == 0)
++		return G_SOURCE_CONTINUE;
+ 
+-	return G_SOURCE_REMOVE;
+-}
++	gtk_combo_box_popup (GTK_COMBO_BOX (choice));
+ 
+-static void
+-ev_view_form_field_choice_mapped_cb (GtkWidget *choice,
+-				     gpointer   user_data)
+-{
+-	g_signal_handlers_disconnect_by_func (choice,
+-					      ev_view_form_field_choice_mapped_cb,
+-					      user_data);
+-	/* Wait for the combo box to be allocated */
+-	g_idle_add_full (G_PRIORITY_DEFAULT_IDLE,
+-			 (GSourceFunc) ev_view_form_field_choice_popup,
+-			 g_object_ref (choice),
+-			 g_object_unref);
++	return G_SOURCE_REMOVE;
+ }
+ 
+ static GtkWidget *
+@@ -3103,9 +3148,9 @@ ev_view_form_field_choice_create_widget (EvView      *view,
+ 						NULL);
+ 		gtk_combo_box_set_active (GTK_COMBO_BOX (choice), selected_item);
+ 		/* The combo box can only pop up once it is on screen */
+-		g_signal_connect (choice, "map",
+-				  G_CALLBACK (ev_view_form_field_choice_mapped_cb),
+-				  NULL);
++		gtk_widget_add_tick_callback (choice,
++					      ev_view_form_field_choice_popup_tick_cb,
++					      NULL, NULL);
+ 
+ 		/* See issue #294 for why we use this instead of "changed" signal */
+ 		g_signal_connect (choice, "notify::popup-shown",
+@@ -5590,6 +5635,10 @@ ev_view_button_press_event (GtkGestureClick	*gesture,
+ 
+ 	button = gdk_button_event_get_button (event);
+ 
++	/* The user goes somewhere else than the field edited before the
++	 * document was changed */
++	g_clear_pointer (&priv->refocus_field_name, g_free);
++
+ 	priv->pressed_button = button;
+ 	priv->selection_info.in_drag = FALSE;
+ 	priv->selection_info.in_select = FALSE;
+@@ -7588,6 +7637,7 @@ ev_view_dispose (GObject *object)
+ 	g_clear_handle_id (&priv->cursor_blink_timeout_id, g_source_remove);
+ 	g_clear_handle_id (&priv->child_focus_idle_id, g_source_remove);
+ 	g_clear_handle_id (&priv->form_changes_idle_id, g_source_remove);
++	g_clear_pointer (&priv->refocus_field_name, g_free);
+ 
+ 	if (priv->link_preview.job) {
+ 		ev_job_cancel (priv->link_preview.job);
+@@ -8460,6 +8510,7 @@ setup_caches (EvView *view)
+ 		                 EV_PAGE_DATA_INCLUDE_TEXT_LOG_ATTRS);
+ 
+ 	g_signal_connect (priv->pixbuf_cache, "job-finished", G_CALLBACK (job_finished_cb), view);
++	g_signal_connect (priv->page_cache, "page-cached", G_CALLBACK (ev_view_page_cached_cb), view);
+ }
+ 
+ static void
+-- 
+2.43.0
+
