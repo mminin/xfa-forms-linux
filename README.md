@@ -14,9 +14,12 @@ of Canada's [consent letter for children travelling outside Canada](https://trav
 (form 2123). It implements the XFA features that form uses, which is not general
 XFA compatibility. Nothing here has been reviewed or accepted upstream yet.
 
-[`corpus/`](corpus/README.md) measures 39 other federal forms. 15 of them, mostly IRCC
-immigration applications, are dynamic XFA forms that Linux PDF viewers can't open at
-all. This engine lays all of them out, but so far only the consent letter works fully.
+[`corpus/`](corpus/README.md) measures 129 federal forms, including every fillable form
+in the CRA's catalogue. 105 of them are dynamic XFA forms that Linux PDF viewers can't
+open at all. Among them are most IRCC immigration applications and 90 tax forms, such as
+the T1135 Foreign Income Verification Statement and the TFSA and FHSA returns. This
+engine lays all of them out, but so far only the consent letter is verified to work
+fully.
 
 ## What works
 
@@ -36,7 +39,7 @@ For the tested form, in the patched Evince:
 Known gaps, most of them found with the [corpus](corpus/README.md):
 
 - XFA table layouts (`layout="table"` and `"row"`) are stacked vertically instead of
-  laid out in columns. Most IRCC forms use them.
+  laid out in columns. Most IRCC forms and many CRA forms use them.
 - Barcode fields are not drawn, so IRCC's **Validate** button can't produce its 2D
   barcodes.
 - FormCalc scripts are not supported (the tested form uses only JavaScript).
@@ -44,7 +47,8 @@ Known gaps, most of them found with the [corpus](corpus/README.md):
 - Picture clauses (display and validation patterns) are ignored.
 - Fonts map onto the 14 standard PDF fonts, with horizontal scaling for narrow
   and black faces. Nothing is embedded.
-- Only GIF and JPEG images are drawn (no PNG, BMP, TIFF, SVG or external images).
+- Only GIF and JPEG images are drawn (no PNG, BMP, TIFF, SVG or external images), so
+  CRA forms lose their logo.
 - `xfa.host.setFocus` does nothing. Script message boxes are answered "Yes"/"OK"
   automatically and then shown.
 
@@ -164,11 +168,8 @@ worth considering.
 ## Credits and AI assistance
 
 Most of this code was written with AI coding assistants: Anthropic's Claude (commits
-carrying a `Co-Authored-By: Claude` line) and OpenAI Codex using **GPT-6.1 Sol**
-(`gpt-6.1-sol`, reasoning effort `high`; Poppler 0008–0009 and Evince 0007–0008).
-The model and effort were verified against the local Codex session records.
-The [PR plan](PR_PLAN.md) records the contribution breakdown and attribution to
-carry into upstream submissions. The human maintainer, mminin <mminin2010@gmail.com>, directed
+carrying a `Co-Authored-By: Claude` line) and OpenAI's ChatGPT/Codex (Poppler 0008–0009
+and Evince 0007–0008). The human maintainer, mminin <mminin2010@gmail.com>, directed
 the work and is responsible for it. Mozilla's
 [pdf.js](https://github.com/mozilla/pdf.js) XFA implementation was consulted as a
 reference while writing the engine.
