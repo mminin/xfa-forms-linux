@@ -1,0 +1,663 @@
+From 7b656ca3c69bcc54838699aa883e30b2dfe28b0e Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 15:42:00 -0700
+Subject: [PATCH] XFA: Fill gaps in the scripting object model
+
+Scripts of real forms failed on parts of the object model that were
+missing; across a corpus of 105 government forms the script errors go
+from 529 to 140.
+
+- Form variables (<variables><text name="Version">) resolve by name,
+  and script objects are properties of the subform declaring them.
+- Script objects shadow the globals: forms define their own util.
+- Script objects export the functions and variables declared at their
+  top level, found by a scanner that skips comments, strings, regular
+  expressions and nested functions, instead of a regular expression
+  that also caught nested and commented out functions.
+- Scripts outside events see an empty event object, not null.
+- Unqualified parent and instanceManager refer to the script's object,
+  and xfa.resolveNode() falls back to resolving from it.
+- Areas are transparent to SOM names, as unnamed subforms are, and
+  names before an index may be followed by spaces ("Row [2]").
+- Properties such as assist.speak or border.fill.color are created on
+  first use, as for containers.
+- clearItems(), addItem(), setItems(), deleteItem(), moveInstance(),
+  recalculate(), fillColor, borderColor, fontColor, borderWidth and
+  mandatory now work, and xfa.log exists.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c |  50 ++++++++
+ poppler/XFAForm.cc     |  88 +++++++++++++-
+ poppler/XFAForm.h      |   6 +
+ poppler/XFAScript.cc   | 263 +++++++++++++++++++++++++++++++++++------
+ 4 files changed, 373 insertions(+), 34 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index f6cb2a4..91192a7 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -538,6 +538,55 @@ static void test_static_values(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* Script access to form variables, script object functions and variables,
++ * fields inside named areas, bare parent references, and item lists. */
++static const char *scripting_xdp = "<?xml version=\"1.0\"?>\n"
++                                   "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                                   "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                                   "<subform name=\"form1\" layout=\"tb\">"
++                                   "<pageSet><pageArea name=\"Page1\">"
++                                   "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                                   "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/>"
++                                   "</pageArea></pageSet>"
++                                   "<variables><text name=\"Version\">v7</text>"
++                                   "<script name=\"util\" contentType=\"application/x-javascript\">"
++                                   "var count = 2; /* function hidden() {} */ var re = /[{'\"]/;\n"
++                                   "function outer() { function inner() { return 1; } return inner() + count; }\n"
++                                   "function bump() { count++; }"
++                                   "</script></variables>"
++                                   "<subform name=\"Sub\" layout=\"position\" w=\"6in\" h=\"0.5in\">"
++                                   "<area name=\"Box\"><field name=\"inArea\" w=\"1in\" h=\"0.3in\"><ui><textEdit/></ui><value><text>boxed</text></value></field></area>"
++                                   "</subform>"
++                                   "<field name=\"list\" w=\"3in\" h=\"0.3in\"><ui><choiceList/></ui></field>"
++                                   "<field name=\"out\" w=\"6in\" h=\"0.3in\" access=\"nonInteractive\"><ui><textEdit/></ui>"
++                                   "<event activity=\"initialize\"><script contentType=\"application/x-javascript\">"
++                                   "util.bump(); list.clearItems(); list.addItem(\"Canada\", \"CA\"); list.addItem(\"France\", \"FR\"); list.rawValue = \"FR\";"
++                                   "this.rawValue = [Version.value, form1.Sub.inArea.rawValue, util.outer(), util.count, parent.name, list.formattedValue].join(\"|\");"
++                                   "</script></event></field>"
++                                   "</subform>"
++                                   "</template>"
++                                   "</xdp:xdp>";
++
++static void test_scripting(void)
++{
++    GBytes *bytes = build_pdf_from(scripting_xdp);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    char *text = page_text(rendered);
++    if (!strstr(text, "v7")) {
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        g_assert_nonnull(strstr(text, "v7|boxed|4|3|form1|France"));
++    }
++    g_free(text);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -547,5 +596,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/images", test_images);
+     g_test_add_func("/xfa/table", test_table);
+     g_test_add_func("/xfa/static-values", test_static_values);
++    g_test_add_func("/xfa/scripting", test_scripting);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 1f62216..f2b2918 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -208,6 +208,9 @@ std::vector<SomStep> parseSom(const std::string &som)
+         std::string name = t;
+         if (size_t br = t.find('['); br != std::string::npos) {
+             name = t.substr(0, br);
++            while (!name.empty() && name.back() == ' ') {
++                name.pop_back();
++            }
+             std::string idx = t.substr(br + 1);
+             if (!idx.empty() && idx.back() == ']') {
+                 idx.pop_back();
+@@ -232,10 +235,11 @@ std::vector<SomStep> parseSom(const std::string &som)
+     return steps;
+ }
+ 
++// SOM looks through unnamed subforms and all areas.
+ bool isTransparent(const XFANode *n)
+ {
+     const std::string &c = n->getClassName();
+-    return n->getNamespace() == XFANode::Namespace::XFA && (c == "subform" || c == "subformSet" || c == "area") && n->getName().empty();
++    return n->getNamespace() == XFANode::Namespace::XFA && (c == "area" || ((c == "subform" || c == "subformSet") && n->getName().empty()));
+ }
+ 
+ void collectNamed(const XFANode *node, const std::string &name, std::vector<XFANode *> &out)
+@@ -791,6 +795,20 @@ void XFAForm::setInstances(const InstanceManager &im, int count)
+     }
+ }
+ 
++void XFAForm::moveInstance(const InstanceManager &im, int from, int to)
++{
++    const std::vector<XFANode *> existing = instances(im);
++    const int n = static_cast<int>(existing.size());
++    if (from < 0 || from >= n || to < 0 || to >= n || from == to) {
++        return;
++    }
++    const size_t pos = existing[to]->indexInParent();
++    std::unique_ptr<XFANode> node = im.parent->removeChild(existing[from]);
++    im.parent->insertChild(pos, std::move(node));
++    invalidateLayout();
++    runCalculations();
++}
++
+ int XFAForm::instanceIndex(XFANode *node) const
+ {
+     XFANode *parent = node->getParent();
+@@ -850,6 +868,74 @@ std::string XFAForm::uiClass(const XFANode *field) const
+     return "textEdit";
+ }
+ 
++// The lists of display texts and of values of a choice field; either may
++// be missing.
++static void itemLists(XFANode *field, XFANode **display, XFANode **save)
++{
++    *display = nullptr;
++    *save = nullptr;
++    for (XFANode *l : field->childrenOfClass("items")) {
++        const bool isSave = l->getAttr("save", "0") == "1" || l->getAttr("presence", "visible") == "hidden";
++        if (isSave && !*save) {
++            *save = l;
++        } else if (!isSave && !*display) {
++            *display = l;
++        }
++    }
++}
++
++void XFAForm::clearItems(XFANode *field)
++{
++    XFANode *display, *save;
++    itemLists(field, &display, &save);
++    for (XFANode *l : { display, save }) {
++        while (l && !l->getChildren().empty()) {
++            l->removeChild(l->getChildren().back().get());
++        }
++    }
++    nodeChanged(field);
++}
++
++void XFAForm::addItem(XFANode *field, const std::string &displayText, const std::optional<std::string> &saveValue)
++{
++    XFANode *display, *save;
++    itemLists(field, &display, &save);
++    auto addText = [this](XFANode *list, const std::string &text) {
++        XFANode *t = list->appendChild(std::make_unique<XFANode>(&formDom, "text"));
++        t->setTextContent(text);
++    };
++    if (!display) {
++        display = field->appendChild(std::make_unique<XFANode>(&formDom, "items"));
++    }
++    if (saveValue && *saveValue != displayText && !save) {
++        // Values differing from the texts need a list of their own.
++        save = field->appendChild(std::make_unique<XFANode>(&formDom, "items"));
++        save->setAttr("save", "1");
++        save->setAttr("presence", "hidden");
++        for (XFANode *c : display->elementChildren()) {
++            addText(save, c->textContent());
++        }
++    }
++    addText(display, displayText);
++    if (save && save != display) {
++        addText(save, saveValue.value_or(displayText));
++    }
++    nodeChanged(field);
++}
++
++void XFAForm::deleteItem(XFANode *field, int index)
++{
++    XFANode *display, *save;
++    itemLists(field, &display, &save);
++    for (XFANode *l : { display, save }) {
++        const std::vector<XFANode *> items = l ? l->elementChildren() : std::vector<XFANode *>();
++        if (index >= 0 && index < static_cast<int>(items.size())) {
++            l->removeChild(items[index]);
++        }
++    }
++    nodeChanged(field);
++}
++
+ std::vector<std::string> XFAForm::getItems(XFANode *field, bool saveValues) const
+ {
+     const std::vector<XFANode *> lists = field->childrenOfClass("items");
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index 8011e0e..dc19db5 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -126,6 +126,7 @@ public:
+     XFANode *addInstance(const InstanceManager &im);
+     void removeInstance(const InstanceManager &im, int index);
+     void setInstances(const InstanceManager &im, int count);
++    void moveInstance(const InstanceManager &im, int from, int to);
+     int instanceIndex(XFANode *node) const;
+     // Index among the siblings with the same name, as used by SOM.
+     int nameIndex(XFANode *node) const;
+@@ -136,6 +137,11 @@ public:
+     std::string getFormattedValue(XFANode *node) const;
+     // Items of a choice list or check button: display texts and values.
+     std::vector<std::string> getItems(XFANode *field, bool saveValues) const;
++    // Changes to the items by scripts. save is the value of an item when it
++    // differs from its display text.
++    void clearItems(XFANode *field);
++    void addItem(XFANode *field, const std::string &display, const std::optional<std::string> &save);
++    void deleteItem(XFANode *field, int index);
+     std::string uiClass(const XFANode *field) const;
+     // Node presence, taking "hidden" ancestors into account when deep.
+     std::string getPresence(const XFANode *node) const;
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index eba52d3..05fb70b 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -34,6 +34,37 @@ var cache = new Map();
+ var TEXT_LIKE = { text: 1, integer: 1, decimal: 1, float: 1, date: 1, time: 1, dateTime: 1, boolean: 1, exData: 1, toolTip: 1, speak: 1, script: 1, image: 1 };
+ var CONTAINERS = { subform: 1, field: 1, draw: 1, exclGroup: 1, subformSet: 1, area: 1, pageArea: 1, pageSet: 1, contentArea: 1 };
+ var DEFAULT_PROPS = { border: 1, assist: 1, font: 1, para: 1, margin: 1, caption: 1, ui: 1, validate: 1, value: 1, desc: 1, extras: 1, fill: 1, toolTip: 1 };
++// Properties of non-container objects that exist by default, created on first use.
++var WIDGET_PROPS = { border: 1, margin: 1, extras: 1 };
++var OBJECT_PROPS = {
++    assist: { speak: 1, toolTip: 1 }, border: { fill: 1, margin: 1, edge: 1, corner: 1, extras: 1 }, fill: { color: 1, extras: 1 },
++    edge: { color: 1, extras: 1 }, corner: { color: 1, extras: 1 }, font: { fill: 1, extras: 1 }, caption: { value: 1, font: 1, para: 1, margin: 1, extras: 1 },
++    validate: { message: 1, picture: 1, script: 1, extras: 1 }, calculate: { message: 1, script: 1, extras: 1 }, ui: { picture: 1, extras: 1 },
++    checkButton: WIDGET_PROPS, choiceList: WIDGET_PROPS, textEdit: WIDGET_PROPS, numericEdit: WIDGET_PROPS, dateTimeEdit: WIDGET_PROPS,
++    imageEdit: WIDGET_PROPS, passwordEdit: WIDGET_PROPS, button: WIDGET_PROPS, signature: WIDGET_PROPS, barcode: WIDGET_PROPS
++};
++// Names a script resolves on its own object before searching the form.
++var THIS_PROPS = { parent: 1, instanceManager: 1 };
++
++function addProperty(id, name) {
++    var c = N.addChild(id, name);
++    // A border made for a script only shows what the script sets.
++    if (name === "border") N.setAttr(N.addChild(c, "edge"), "presence", "hidden");
++    return c;
++}
++
++function colorOf(w, path) {
++    for (var i = 0; i < path.length && w; i++) w = w[path[i]];
++    return w ? w.value : "";
++}
++function setColor(id, path, v) {
++    var w = wrap(id);
++    for (var i = 0; i < path.length; i++) {
++        if (path[i] === "fill") N.setAttr(idOf(w), "presence", "visible");
++        w = w[path[i]];
++    }
++    w.value = v;
++}
+ 
+ function idOf(o) {
+     if (o === null || o === undefined) return null;
+@@ -68,13 +99,13 @@ InstanceManager.prototype = {
+     insertInstance: function () { return wrap(N.imAdd(this._p, this._t)); },
+     removeInstance: function (i) { N.imRemove(this._p, this._t, i | 0); },
+     setInstances: function (n) { N.imSet(this._p, this._t, n | 0); },
+-    moveInstance: function () {}
++    moveInstance: function (from, to) { N.imMove(this._p, this._t, from | 0, to | 0); }
+ };
+ function im(pair) { return pair ? new InstanceManager(pair) : null; }
+ 
+ var methods = {
+-    resolveNode: function (id, som) { var r = N.resolve(id, String(som)); return r.length ? wrap(r[0]) : null; },
+-    resolveNodes: function (id, som) { return staticList(N.resolve(id, String(som))); },
++    resolveNode: function (id, som) { var r = N.resolve(id, String(som), false); return r.length ? wrap(r[0]) : null; },
++    resolveNodes: function (id, som) { return staticList(N.resolve(id, String(som), false)); },
+     execValidate: function (id) { return N.execValidate(id); },
+     execCalculate: function () { N.runCalcs(); },
+     execInitialize: function (id) { N.fireEvent(id, "initialize"); },
+@@ -98,10 +129,15 @@ var methods = {
+     createNode: function (id, cls, name) { return wrap(N.createNode(String(cls), name === undefined ? "" : String(name))); },
+     saveXML: function (id) { return N.saveXML(id); },
+     toString: function (id) { var v = N.rawValue(id); return v === null ? "" : v; },
+-    clearItems: function () {},
+-    addItem: function () {},
+-    setItems: function () {},
+-    deleteItem: function () {},
++    clearItems: function (id) { N.clearItems(id); },
++    addItem: function (id, display, save) { N.addItem(id, String(display), save === undefined || save === null ? null : String(save)); },
++    deleteItem: function (id, i) { N.deleteItem(id, i | 0); },
++    setItems: function (id, list, columns) {
++        N.clearItems(id);
++        var parts = String(list).split(","), n = columns === 2 ? 2 : 1;
++        for (var i = 0; i + n - 1 < parts.length; i += n) N.addItem(id, parts[i], n === 2 ? parts[i + 1] : null);
++    },
++    recalculate: function () { N.runCalcs(); },
+     isCompatibleNS: function () { return true; },
+     clone: function (id) { return wrap(id); }
+ };
+@@ -156,6 +192,9 @@ var handler = {
+             return vl.length ? (N.attr(vl[0], "nullTest") || "disabled") : "disabled";
+         }
+         case "mandatoryMessage": return "";
++        case "fillColor": return colorOf(wrap(id), ["border", "fill", "color"]);
++        case "borderColor": return colorOf(wrap(id), ["border", "edge", "color"]);
++        case "fontColor": return colorOf(wrap(id), ["font", "fill", "color"]);
+         case "oneOfChild": { var ch = N.children(id); return ch.length ? wrap(ch[0]) : null; }
+         case "isContainer": return !!CONTAINERS[cls];
+         case "model": return wrap(N.formModel());
+@@ -170,11 +209,15 @@ var handler = {
+             var p = N.imFind(id, prop.substr(1), false);
+             if (p) return im(p);
+         }
++        var so = scriptObjects.get(id);
++        if (so && Object.prototype.hasOwnProperty.call(so, prop)) return so[prop];
+         var c = N.child(id, prop);
+         if (c !== null) return wrap(c);
++        var v = N.variable(id, prop, false);
++        if (v !== null) return wrap(v);
+         var a = N.attr(id, prop);
+         if (a !== null) return a;
+-        if (DEFAULT_PROPS[prop] && CONTAINERS[cls]) return wrap(N.addChild(id, prop));
++        if (CONTAINERS[cls] ? DEFAULT_PROPS[prop] : OBJECT_PROPS[cls] && OBJECT_PROPS[cls][prop]) return wrap(addProperty(id, prop));
+         return undefined;
+     },
+     set: function (t, prop, value) {
+@@ -193,7 +236,21 @@ var handler = {
+             if (cls === "color") { N.setAttr(id, "value", str || ""); return true; }
+             if (TEXT_LIKE[cls]) { N.setText(id, str || ""); return true; }
+             break;
+-        case "errorText": case "mandatoryMessage": case "mandatory": return true;
++        case "mandatory": wrap(id).validate.nullTest = str || "disabled"; return true;
++        case "fillColor": setColor(id, ["border", "fill", "color"], str || ""); return true;
++        case "fontColor": setColor(id, ["font", "fill", "color"], str || ""); return true;
++        case "borderColor": {
++            var edges = N.childrenOfClass(idOf(wrap(id).border), "edge");
++            if (!edges.length) edges = [idOf(wrap(id).border.edge)];
++            for (var i = 0; i < edges.length; i++) wrap(edges[i]).color.value = str || "";
++            return true;
++        }
++        case "borderWidth": {
++            var es = N.childrenOfClass(idOf(wrap(id).border), "edge");
++            for (var k = 0; k < es.length; k++) N.setAttr(es[k], "thickness", str || "");
++            return true;
++        }
++        case "errorText": case "mandatoryMessage": return true;
+         }
+         N.setAttr(id, prop, str || "");
+         return true;
+@@ -230,21 +287,26 @@ function scopeFor(id) {
+     var s = scopes.get(id);
+     if (s) return s;
+     s = new Proxy({}, {
++        // Script objects of the form shadow the globals, as util does.
+         has: function (t, name) {
+-            if (typeof name !== "string" || name.substr(0, 2) === "__" || RESERVED.has(name)) return false;
++            if (typeof name !== "string" || name.substr(0, 2) === "__") return false;
+             if (findScriptObject(id, name) !== undefined) return true;
++            if (RESERVED.has(name)) return false;
++            if (THIS_PROPS[name]) return true;
+             if (name.charAt(0) === "_" && name.length > 1 && N.imFind(id, name.substr(1), true)) return true;
+-            return N.scopeGet(id, name) !== null;
++            return N.scopeGet(id, name) !== null || N.variable(id, name, true) !== null;
+         },
+         get: function (t, name) {
+             if (typeof name !== "string") return undefined;
+             var so = findScriptObject(id, name);
+             if (so !== undefined) return so;
++            if (THIS_PROPS[name]) return wrap(id)[name];
+             if (name.charAt(0) === "_" && name.length > 1) {
+                 var p = N.imFind(id, name.substr(1), true);
+                 if (p) return im(p);
+             }
+-            return wrap(N.scopeGet(id, name));
++            var n = N.scopeGet(id, name);
++            return wrap(n !== null ? n : N.variable(id, name, true));
+         },
+         set: function (t, name, v) {
+             var nid = N.scopeGet(id, name);
+@@ -256,12 +318,13 @@ function scopeFor(id) {
+     return s;
+ }
+ 
++// Scripts outside events, such as script objects, see an empty event.
+ function makeEvent(ev) {
+-    if (!ev) return null;
++    ev = ev || { activity: "", newText: "", prevText: "", change: "", target: null };
+     return {
+         name: ev.activity, newText: ev.newText, prevText: ev.prevText, change: ev.change, fullText: ev.newText,
+         target: wrap(ev.target), selStart: 0, selEnd: 0, modifier: false, shift: false, keyDown: false,
+-        commitKey: 0, reenter: false, cancelAction: false, soapFaultCode: 0, soapFaultString: ""
++        commitKey: 0, reenter: false, cancelAction: false, soapFaultCode: 0, soapFaultString: "", rc: true, value: ev.newText
+     };
+ }
+ 
+@@ -294,8 +357,15 @@ function scand(fmt, s) {
+ 
+ function pad2(n) { return (n < 10 ? "0" : "") + n; }
+ 
++var running = [];
++function resolveGlobal(som) {
++    var r = N.resolve(N.formModel(), som, false);
++    if (!r.length && running.length) r = N.resolve(running[running.length - 1], som, true);
++    return r;
++}
++
+ var xfa = {
+-    event: null,
++    event: makeEvent(null),
+     host: {
+         get name() { return "poppler"; },
+         get language() { return N.language(); },
+@@ -341,8 +411,10 @@ var xfa = {
+         loadXML: function (x, ignoreRoot, overwrite) { N.loadXML(String(x), !!ignoreRoot, !!overwrite); },
+         saveXML: function () { return ""; }
+     },
+-    resolveNode: function (som) { var r = N.resolve(N.formModel(), String(som)); return r.length ? wrap(r[0]) : null; },
+-    resolveNodes: function (som) { return staticList(N.resolve(N.formModel(), String(som))); },
++    // Unqualified expressions also resolve from the object running the script.
++    resolveNode: function (som) { var r = resolveGlobal(String(som)); return r.length ? wrap(r[0]) : null; },
++    resolveNodes: function (som) { return staticList(resolveGlobal(String(som))); },
++    log: { message: function () {} },
+     get form() { return wrap(N.formModel()); },
+     get template() { return wrap(N.templateRoot()); }
+ };
+@@ -383,20 +455,79 @@ Object.defineProperty(g, "event", { get: function () { return xfa.event; }, conf
+ g.__run = function (__id, __src, __ev) {
+     var __prev = xfa.event;
+     xfa.event = makeEvent(__ev);
++    running.push(__id);
+     try {
+         return (function () { with (scopeFor(__id)) { return eval(__src); } }).call(wrap(__id));
+     } finally {
++        running.pop();
+         xfa.event = __prev;
+     }
+ };
+ 
++// The functions and variables declared at the top level of a script, skipping
++// comments, strings, regular expressions and nested blocks.
++function topLevelNames(src) {
++    var fns = [], vars = [], depth = 0, i = 0, n = src.length, decl = /(function|var)\s+([A-Za-z_$][\w$]*)/y, last = "";
++    while (i < n) {
++        var c = src.charAt(i);
++        if (!/\s/.test(c) && !(c === "/" && (src.charAt(i + 1) === "/" || src.charAt(i + 1) === "*"))) {
++            var prev = last;
++            last = c;
++        }
++        if (c === "/" && src.charAt(i + 1) !== "/" && src.charAt(i + 1) !== "*" && (prev === "" || "(,=:[!&|?{};+-*%<>~^".indexOf(prev) >= 0)) {
++            // A regular expression literal.
++            for (i++; i < n && src.charAt(i) !== "/" && src.charAt(i) !== "\n"; i++) {
++                if (src.charAt(i) === "\\") {
++                    i++;
++                } else if (src.charAt(i) === "[") {
++                    while (i + 1 < n && src.charAt(i + 1) !== "]" && src.charAt(i + 1) !== "\n") i += src.charAt(i + 1) === "\\" ? 2 : 1;
++                    i++;
++                }
++            }
++            i++;
++            last = "x";
++        } else if (c === "/" && src.charAt(i + 1) === "/") {
++            i = src.indexOf("\n", i);
++            if (i < 0) break;
++        } else if (c === "/" && src.charAt(i + 1) === "*") {
++            i = src.indexOf("*/", i + 2);
++            if (i < 0) break;
++            i += 2;
++        } else if (c === "\"" || c === "'" || c === "`") {
++            for (i++; i < n && src.charAt(i) !== c; i++) if (src.charAt(i) === "\\") i++;
++            i++;
++        } else if (c === "{" || c === "}") {
++            depth += c === "{" ? 1 : -1;
++            i++;
++        } else if (depth === 0 && (c === "f" || c === "v") && (i === 0 || !/[\w$.]/.test(src.charAt(i - 1)))) {
++            decl.lastIndex = i;
++            var m = decl.exec(src);
++            if (m) {
++                var list = m[1] === "function" ? fns : vars;
++                if (list.indexOf(m[2]) < 0) list.push(m[2]);
++                i = decl.lastIndex;
++            } else {
++                i++;
++            }
++        } else {
++            i++;
++        }
++    }
++    return { functions: fns, variables: vars };
++}
++
+ g.__defineScriptObject = function (__ownerId, __name, __body) {
+-    var names = [], re = /function\s+([A-Za-z_$][\w$]*)\s*\(/g, m;
+-    while ((m = re.exec(__body)) !== null) if (names.indexOf(m[1]) < 0) names.push(m[1]);
+-    var tail = "\n;";
+-    for (var i = 0; i < names.length; i++)
+-        tail += names[i] + " = (function (f, o) { return function () { return f.apply(o, arguments); }; })(" + names[i] + ", this);\n";
+-    tail += "({" + names.map(function (n) { return JSON.stringify(n) + ": " + n; }).join(", ") + "})";
++    // Functions run with the owner of the script object as this; variables
++    // stay live.
++    var names = topLevelNames(__body);
++    var tail = "\n;(function (o) {\n";
++    names.functions.forEach(function (n) {
++        tail += "if (typeof " + n + " === 'function') { " + n + " = (function (f, s) { return function () { return f.apply(s, arguments); }; })(" + n + ", this); o." + n + " = " + n + "; }\n";
++    });
++    names.variables.forEach(function (n) {
++        tail += "Object.defineProperty(o, " + JSON.stringify(n) + ", { get: function () { return " + n + "; }, set: function (v) { " + n + " = v; }, enumerable: true });\n";
++    });
++    tail += "return o;\n}).call(this, {})";
+     var __src = __body + tail;
+     var obj = (function () { with (scopeFor(__ownerId)) { return eval(__src); } }).call(wrap(__ownerId));
+     var map = scriptObjects.get(__ownerId) || {};
+@@ -633,7 +764,55 @@ NATIVE(setText)
+ NATIVE(resolve)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
+-    return idArray(ctx, n ? formOf(ctx)->resolve(n, strArg(ctx, ARG(1)), false) : std::vector<XFANode *>());
++    return idArray(ctx, n ? formOf(ctx)->resolve(n, strArg(ctx, ARG(1)), JS_ToBool(ctx, ARG(2)) == 1) : std::vector<XFANode *>());
++}
++
++// A form variable, such as <text name="Version"> in <variables>, of the
++// node or, when inherit is true, of its nearest ancestor that has one.
++NATIVE(variable)
++{
++    const std::string name = strArg(ctx, ARG(1));
++    const bool inherit = JS_ToBool(ctx, ARG(2)) == 1;
++    for (XFANode *n = nodeArg(ctx, ARG(0)); n; n = inherit ? n->getParent() : nullptr) {
++        for (XFANode *vars : n->childrenOfClass("variables")) {
++            for (XFANode *v : vars->elementChildren()) {
++                if (v->getName() == name) {
++                    return idValue(ctx, v);
++                }
++            }
++        }
++    }
++    return JS_NULL;
++}
++
++NATIVE(clearItems)
++{
++    XFANode *n = nodeArg(ctx, ARG(0));
++    if (n && n->getDom() == formOf(ctx)->getFormDom()) {
++        formOf(ctx)->clearItems(n);
++    }
++    return JS_UNDEFINED;
++}
++
++NATIVE(addItem)
++{
++    XFANode *n = nodeArg(ctx, ARG(0));
++    if (n && n->getDom() == formOf(ctx)->getFormDom()) {
++        const JSValueConst save = ARG(2);
++        formOf(ctx)->addItem(n, strArg(ctx, ARG(1)), JS_IsNull(save) || JS_IsUndefined(save) ? std::nullopt : std::optional<std::string>(strArg(ctx, save)));
++    }
++    return JS_UNDEFINED;
++}
++
++NATIVE(deleteItem)
++{
++    XFANode *n = nodeArg(ctx, ARG(0));
++    int32_t index = -1;
++    JS_ToInt32(ctx, &index, ARG(1));
++    if (n && n->getDom() == formOf(ctx)->getFormDom()) {
++        formOf(ctx)->deleteItem(n, index);
++    }
++    return JS_UNDEFINED;
+ }
+ 
+ NATIVE(scopeGet)
+@@ -716,6 +895,21 @@ NATIVE(imSet)
+     return JS_UNDEFINED;
+ }
+ 
++NATIVE(imMove)
++{
++    if (argc < 4) {
++        return JS_UNDEFINED;
++    }
++    const auto im = imArgs(ctx, argv);
++    int32_t from = 0, to = 0;
++    JS_ToInt32(ctx, &from, argv[2]);
++    JS_ToInt32(ctx, &to, argv[3]);
++    if (im) {
++        formOf(ctx)->moveInstance(*im, from, to);
++    }
++    return JS_UNDEFINED;
++}
++
+ NATIVE(imOccur)
+ {
+     XFANode *t = nodeArg(ctx, ARG(0));
+@@ -928,13 +1122,13 @@ struct NativeEntry
+ };
+ 
+ #    define ENTRY(name, len) { #name, native_##name, len }
+-const NativeEntry natives[] = { ENTRY(alive, 1),           ENTRY(cls, 1),           ENTRY(name, 1),        ENTRY(attr, 2),          ENTRY(setAttr, 3),     ENTRY(parent, 1),         ENTRY(children, 1),
+-                                ENTRY(childrenOfClass, 2), ENTRY(addChild, 2),      ENTRY(child, 2),       ENTRY(siblingsNamed, 1), ENTRY(text, 1),        ENTRY(setText, 2),        ENTRY(resolve, 2),
+-                                ENTRY(scopeGet, 2),        ENTRY(imFind, 3),        ENTRY(imOf, 1),        ENTRY(imCount, 2),       ENTRY(imAdd, 2),       ENTRY(imRemove, 3),       ENTRY(imSet, 3),
+-                                ENTRY(imOccur, 2),         ENTRY(instanceIndex, 1), ENTRY(nameIndex, 1),   ENTRY(rawValue, 1),      ENTRY(setRawValue, 2), ENTRY(formattedValue, 1), ENTRY(items, 2),
+-                                ENTRY(pageOf, 1),          ENTRY(pageCount, 0),     ENTRY(pageContent, 3), ENTRY(relayout, 0),      ENTRY(message, 2),     ENTRY(launchURL, 1),      ENTRY(print, 2),
+-                                ENTRY(language, 0),        ENTRY(resetData, 1),     ENTRY(saveXML, 1),     ENTRY(loadXML, 3),       ENTRY(removeNode, 1),  ENTRY(appendNode, 2),     ENTRY(createNode, 2),
+-                                ENTRY(execValidate, 1),    ENTRY(fireEvent, 2),     ENTRY(runCalcs, 0),    ENTRY(log, 1),           ENTRY(som, 1),         ENTRY(formModel, 0),      ENTRY(templateRoot, 0) };
++const NativeEntry natives[] = { ENTRY(alive, 1),        ENTRY(cls, 1),         ENTRY(name, 1),           ENTRY(attr, 2),      ENTRY(setAttr, 3),    ENTRY(parent, 1),    ENTRY(children, 1),      ENTRY(childrenOfClass, 2),
++                                ENTRY(addChild, 2),     ENTRY(child, 2),       ENTRY(siblingsNamed, 1),  ENTRY(text, 1),      ENTRY(setText, 2),    ENTRY(resolve, 3),   ENTRY(scopeGet, 2),      ENTRY(imFind, 3),
++                                ENTRY(imOf, 1),         ENTRY(imCount, 2),     ENTRY(imAdd, 2),          ENTRY(imRemove, 3),  ENTRY(imSet, 3),      ENTRY(imOccur, 2),   ENTRY(instanceIndex, 1), ENTRY(nameIndex, 1),
++                                ENTRY(rawValue, 1),     ENTRY(setRawValue, 2), ENTRY(formattedValue, 1), ENTRY(items, 2),     ENTRY(pageOf, 1),     ENTRY(pageCount, 0), ENTRY(pageContent, 3),   ENTRY(relayout, 0),
++                                ENTRY(message, 2),      ENTRY(launchURL, 1),   ENTRY(print, 2),          ENTRY(language, 0),  ENTRY(resetData, 1),  ENTRY(saveXML, 1),   ENTRY(loadXML, 3),       ENTRY(removeNode, 1),
++                                ENTRY(appendNode, 2),   ENTRY(createNode, 2),  ENTRY(execValidate, 1),   ENTRY(fireEvent, 2), ENTRY(runCalcs, 0),   ENTRY(log, 1),       ENTRY(som, 1),           ENTRY(formModel, 0),
++                                ENTRY(templateRoot, 0), ENTRY(variable, 3),    ENTRY(clearItems, 1),     ENTRY(addItem, 3),   ENTRY(deleteItem, 2), ENTRY(imMove, 4) };
+ 
+ int interruptHandler(JSContext *, void *opaque)
+ {
+@@ -1017,14 +1211,17 @@ void XFAScript::defineScriptObjects(XFANode *container)
+     for (XFANode *vars : container->childrenOfClass("variables")) {
+         for (XFANode *s : vars->childrenOfClass("script")) {
+             const std::string name = s->getName();
+-            if (name.empty()) {
++            // Some forms keep XML data, not code, in script objects.
++            const std::string text = s->textContent();
++            const size_t start = text.find_first_not_of(" \t\r\n");
++            if (name.empty() || (start != std::string::npos && text[start] == '<')) {
+                 continue;
+             }
+             JS_UpdateStackTop(d->rt);
+             d->deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+             JSValue global = JS_GetGlobalObject(d->ctx);
+             JSValue fn = JS_GetPropertyStr(d->ctx, global, "__defineScriptObject");
+-            JSValue args[3] = { JS_NewInt32(d->ctx, idOfNode(d->form, container)), strValue(d->ctx, name), strValue(d->ctx, s->textContent()) };
++            JSValue args[3] = { JS_NewInt32(d->ctx, idOfNode(d->form, container)), strValue(d->ctx, name), strValue(d->ctx, text) };
+             JSValue r = JS_Call(d->ctx, fn, global, 3, args);
+             if (JS_IsException(r)) {
+                 d->form->logMessage("script object " + name + ": " + exceptionText(d->ctx));
+-- 
+2.43.0
+
