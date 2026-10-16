@@ -1,0 +1,125 @@
+From 246bcdfc64296f646a98e8252e8942a15fb66d51 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:08:28 -0700
+Subject: [PATCH] XFA: Support the validation scripts of immigration forms
+
+The Validate button of immigration forms stopped at missing parts of
+the object model:
+
+- field.validationMessage, formatMessage and mandatoryMessage read and
+  write the texts of <validate><message>.
+- ui.oneOfChild is the widget, not a <picture> before it.
+- value.resolveNode("#text") on a value holding another content type
+  gives an empty node, as in Acrobat, instead of null.
+
+Scripts for the server are now skipped silently.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ poppler/XFAForm.cc   |  2 +-
+ poppler/XFAScript.cc | 38 ++++++++++++++++++++++++++++++++++----
+ 2 files changed, 35 insertions(+), 5 deletions(-)
+
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index f6fb317..a650b17 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -370,6 +370,7 @@ std::string XFAForm::scriptSource(const XFANode *s, bool *runnable)
+         return source;
+     }
+     if (type != "application/x-formcalc") {
++        logMessage("skipping script in " + type);
+         return {};
+     }
+     auto it = formCalcCache.find(source);
+@@ -1248,7 +1249,6 @@ void XFAForm::fireEvent(XFANode *node, const std::string &activity, EventContext
+         bool runnable;
+         std::string src = scriptSource(s, &runnable);
+         if (!runnable) {
+-            logMessage("skipping non-JavaScript " + activity + " script");
+             continue;
+         }
+         sources.push_back(std::move(src));
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 2b6e7ed..cfaab80 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -35,6 +35,7 @@ var cache = new Map();
+ var TEXT_LIKE = { text: 1, integer: 1, decimal: 1, float: 1, date: 1, time: 1, dateTime: 1, boolean: 1, exData: 1, toolTip: 1, speak: 1, script: 1, image: 1, dataValue: 1, dataGroup: 1 };
+ var CONTAINERS = { subform: 1, field: 1, draw: 1, exclGroup: 1, subformSet: 1, area: 1, pageArea: 1, pageSet: 1, contentArea: 1 };
+ var DEFAULT_PROPS = { border: 1, assist: 1, font: 1, para: 1, margin: 1, caption: 1, ui: 1, validate: 1, value: 1, desc: 1, extras: 1, fill: 1, toolTip: 1 };
++var VALUE_CONTENT = { text: 1, exData: 1, integer: 1, decimal: 1, float: 1, date: 1, time: 1, dateTime: 1, boolean: 1, image: 1 };
+ // Properties of non-container objects that exist by default, created on first use.
+ var WIDGET_PROPS = { border: 1, margin: 1, extras: 1 };
+ var OBJECT_PROPS = {
+@@ -64,6 +65,20 @@ function metaData(id, name) {
+     };
+ }
+ 
++// The text of <validate><message> for a test, or with create its node.
++function validateMessage(id, test, create) {
++    var w = wrap(id), texts = create ? N.childrenOfClass(idOf(w.validate.message), "text") : [];
++    if (!create) {
++        var v = N.childrenOfClass(id, "validate"), m = v.length ? N.childrenOfClass(v[0], "message") : [];
++        texts = m.length ? N.childrenOfClass(m[0], "text") : [];
++    }
++    for (var i = 0; i < texts.length; i++) if (N.name(texts[i]) === test) return create ? texts[i] : N.text(texts[i]);
++    if (!create) return "";
++    var t = N.addChild(idOf(w.validate.message), "text");
++    N.setAttr(t, "name", test);
++    return t;
++}
++
+ function colorOf(w, path) {
+     for (var i = 0; i < path.length && w; i++) w = w[path[i]];
+     return w ? w.value : "";
+@@ -115,7 +130,13 @@ InstanceManager.prototype = {
+ function im(pair) { return pair ? new InstanceManager(pair) : null; }
+ 
+ var methods = {
+-    resolveNode: function (id, som) { var r = N.resolve(id, String(som), false); return r.length ? wrap(r[0]) : null; },
++    resolveNode: function (id, som) {
++        var r = N.resolve(id, String(som), false);
++        if (r.length) return wrap(r[0]);
++        // A content type a value does not hold reads as empty, as in Acrobat.
++        var m = /^#(\w+)$/.exec(String(som));
++        return m && N.cls(id) === "value" && VALUE_CONTENT[m[1]] ? wrap(N.createNode(m[1], "")) : null;
++    },
+     resolveNodes: function (id, som) { return staticList(N.resolve(id, String(som), false)); },
+     execValidate: function (id) { return N.execValidate(id); },
+     execCalculate: function () { N.runCalcs(); },
+@@ -205,11 +226,17 @@ var handler = {
+             var vl = N.childrenOfClass(id, "validate");
+             return vl.length ? (N.attr(vl[0], "nullTest") || "disabled") : "disabled";
+         }
+-        case "mandatoryMessage": return "";
++        case "mandatoryMessage": return validateMessage(id, "nullTest", false);
++        case "validationMessage": return validateMessage(id, "scriptTest", false);
++        case "formatMessage": return validateMessage(id, "formatTest", false);
+         case "fillColor": return colorOf(wrap(id), ["border", "fill", "color"]);
+         case "borderColor": return colorOf(wrap(id), ["border", "edge", "color"]);
+         case "fontColor": return colorOf(wrap(id), ["font", "fill", "color"]);
+-        case "oneOfChild": { var ch = N.children(id); return ch.length ? wrap(ch[0]) : null; }
++        case "oneOfChild": {
++            // The widget of a ui, the content of a value: not their picture or extras.
++            var ch = N.children(id).filter(function (c) { var k = N.cls(c); return k !== "picture" && k !== "extras"; });
++            return ch.length ? wrap(ch[0]) : null;
++        }
+         case "isContainer": return !!CONTAINERS[cls];
+         case "model": return wrap(N.formModel());
+         case "ns": return "";
+@@ -265,7 +292,10 @@ var handler = {
+             for (var k = 0; k < es.length; k++) N.setAttr(es[k], "thickness", str || "");
+             return true;
+         }
+-        case "errorText": case "mandatoryMessage": return true;
++        case "mandatoryMessage": N.setText(validateMessage(id, "nullTest", true), str || ""); return true;
++        case "validationMessage": N.setText(validateMessage(id, "scriptTest", true), str || ""); return true;
++        case "formatMessage": N.setText(validateMessage(id, "formatTest", true), str || ""); return true;
++        case "errorText": return true;
+         }
+         N.setAttr(id, prop, str || "");
+         return true;
+-- 
+2.43.0
+

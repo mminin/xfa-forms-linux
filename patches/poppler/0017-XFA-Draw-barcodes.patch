@@ -1,0 +1,341 @@
+From 1356b300a2d3623c53b3b490b3350e06c6a52d77 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:08:52 -0700
+Subject: [PATCH] XFA: Draw barcodes
+
+Barcode fields were left empty. Immigration forms print the answers of
+the applicant in PDF417 barcodes for data entry, and tax forms use QR
+codes.
+
+Barcodes are now encoded with Zint, a new optional dependency
+(ENABLE_XFA_BARCODES), and drawn from its module matrix: modules are
+moduleWidth wide, PDF417 rows moduleHeight high and as many PDF417
+columns are used as fit the field. Linear barcodes show their text
+below the bars.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt         |  26 +++++++++
+ config.h.cmake         |   1 +
+ glib/tests/check_xfa.c |  72 +++++++++++++++++++++++++
+ poppler/XFAWriter.cc   | 120 ++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 218 insertions(+), 1 deletion(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index fbe4899..c9eddb0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -83,6 +83,7 @@ option(ENABLE_LIBTIFF "Build code to write images as TIFF (pdfimages/pdftocairo/
+ option(ENABLE_NSS3 "Build the NSS backend for cryptographic support" ON)
+ option(ENABLE_GPGME "Build the GPG backend for cryptographic support" ON)
+ option(ENABLE_XFA_SCRIPTING "Run the JavaScript of dynamic XFA forms (uses QuickJS)" ON)
++option(ENABLE_XFA_BARCODES "Draw the barcodes of dynamic XFA forms (uses Zint)" ON)
+ option(ENABLE_PGP_SIGNATURES "Enable pgp signatures in GPG backend by default" OFF)
+ option(ENABLE_ZLIB_UNCOMPRESS "Use zlib to uncompress flate streams (not totally safe)." OFF)
+ option(BUILD_SHARED_LIBS "Build poppler as a shared library" ON)
+@@ -196,6 +197,27 @@ if(ENABLE_XFA_SCRIPTING)
+   endif()
+ endif()
+ set(HAVE_XFA_SCRIPTING ${ENABLE_XFA_SCRIPTING})
++if(ENABLE_XFA_BARCODES)
++  # Zint's CMake package, or its header and library as distributions ship them.
++  find_package(zint CONFIG QUIET)
++  if(TARGET zint::zint-static)
++    set(ZINT_TARGET zint::zint-static)
++  elseif(TARGET zint::zint)
++    set(ZINT_TARGET zint::zint)
++  else()
++    find_path(ZINT_INCLUDE_DIR zint.h)
++    find_library(ZINT_LIBRARY zint)
++    if(ZINT_INCLUDE_DIR AND ZINT_LIBRARY)
++      add_library(zint_library UNKNOWN IMPORTED)
++      set_target_properties(zint_library PROPERTIES IMPORTED_LOCATION "${ZINT_LIBRARY}" INTERFACE_INCLUDE_DIRECTORIES "${ZINT_INCLUDE_DIR}")
++      set(ZINT_TARGET zint_library)
++    else()
++      message(WARNING "Zint not found: the barcodes of XFA forms will not be drawn. Set ENABLE_XFA_BARCODES to OFF to silence this warning.")
++      set(ENABLE_XFA_BARCODES OFF)
++    endif()
++  endif()
++endif()
++set(HAVE_XFA_BARCODES ${ENABLE_XFA_BARCODES})
+ 
+ find_soft_mandatory_package(ENABLE_HARFBUZZ harfbuzz "")
+ 
+@@ -556,6 +578,9 @@ endif()
+ if (ENABLE_XFA_SCRIPTING)
+   set(poppler_LIBS ${poppler_LIBS} qjs)
+ endif()
++if (ENABLE_XFA_BARCODES)
++  set(poppler_LIBS ${poppler_LIBS} ${ZINT_TARGET})
++endif()
+ if (ENABLE_NSS3)
+   set(poppler_SRCS ${poppler_SRCS}
+     poppler/NSSCryptoSignBackend.cc
+@@ -930,6 +955,7 @@ show_end_message_yesno("use brotli" ENABLE_BROTLI)
+ show_end_message_yesno("use zlib uncompress" ENABLE_ZLIB_UNCOMPRESS)
+ show_end_message_yesno("use nss3" ENABLE_NSS3)
+ show_end_message_yesno("run XFA scripts (QuickJS)" ENABLE_XFA_SCRIPTING)
++show_end_message_yesno("draw XFA barcodes (Zint)" ENABLE_XFA_BARCODES)
+ show_end_message_yesno("use gpg" ENABLE_GPGME)
+ show_end_message("  default signature backend" ${DEFAULT_SIGNATURE_BACKEND})
+ show_end_message_yesno("  enable pgp signatures in gpg backend by default" ENABLE_PGP_SIGNATURES)
+diff --git a/config.h.cmake b/config.h.cmake
+index e8e0ef6..7ed9a1b 100644
+--- a/config.h.cmake
++++ b/config.h.cmake
+@@ -22,6 +22,7 @@
+ 
+ /* Run the scripts of XFA forms with QuickJS */
+ #cmakedefine01 HAVE_XFA_SCRIPTING
++#cmakedefine01 HAVE_XFA_BARCODES
+ 
+ /* Enable pgp signatures in GPG backend by default */
+ #cmakedefine01 ENABLE_PGP_SIGNATURES
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 9230ac8..086302a 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -685,6 +685,77 @@ static void test_formcalc(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* A PDF417 barcode, drawn when poppler is built with Zint. */
++static const char *barcode_xdp = "<?xml version=\"1.0\"?>\n"
++                                 "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                                 "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                                 "<subform name=\"form1\" layout=\"position\" w=\"8.5in\" h=\"11in\">"
++                                 "<pageSet><pageArea name=\"Page1\">"
++                                 "<contentArea x=\"0in\" y=\"0in\" w=\"8.5in\" h=\"11in\"/>"
++                                 "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/>"
++                                 "</pageArea></pageSet>"
++                                 "<field name=\"code\" x=\"1in\" y=\"1in\" w=\"4in\" h=\"1in\" access=\"readOnly\">"
++                                 "<ui><barcode type=\"pdf417\" errorCorrectionLevel=\"5\" moduleHeight=\"0.676mm\" moduleWidth=\"0.338mm\"/></ui>"
++                                 "<value><text>XFA barcode test 0123456789 0123456789 0123456789</text></value></field>"
++                                 "</subform>"
++                                 "</template>"
++                                 "</xdp:xdp>";
++
++static void test_barcode(void)
++{
++    GBytes *bytes = build_pdf_from(barcode_xdp);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    PopplerPage *page = poppler_document_get_page(rendered, 0);
++    double width, height;
++    poppler_page_get_size(page, &width, &height);
++    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, width * 2, height * 2);
++    cairo_t *cr = cairo_create(surface);
++    cairo_set_source_rgb(cr, 1, 1, 1);
++    cairo_paint(cr);
++    cairo_scale(cr, 2, 2);
++    poppler_page_render(page, cr);
++    cairo_surface_flush(surface);
++    const unsigned char *data = cairo_image_surface_get_data(surface);
++    const int stride = cairo_image_surface_get_stride(surface);
++    /* The field spans 1 to 5 inches across, 1 to 2 down, at 144 dpi: the
++     * symbol is as wide as the field allows, and about half dark. */
++    int x1 = 720, x2 = 0, y1 = 288, y2 = 0;
++    for (int y = 144; y < 288; ++y) {
++        for (int x = 144; x < 720; ++x) {
++            if (data[y * stride + x * 4 + 1] < 128) {
++                x1 = MIN(x1, x);
++                x2 = MAX(x2, x);
++                y1 = MIN(y1, y);
++                y2 = MAX(y2, y);
++            }
++        }
++    }
++    if (x2 < x1) {
++        g_test_skip("poppler was built without Zint");
++    } else {
++        int dark = 0, total = 0;
++        for (int y = y1; y <= y2; ++y) {
++            for (int x = x1; x <= x2; ++x) {
++                dark += data[y * stride + x * 4 + 1] < 128;
++                ++total;
++            }
++        }
++        g_assert_cmpint(x2 - x1, >, 576 * 3 / 4);
++        g_assert_cmpint(dark, >, total * 3 / 10);
++        g_assert_cmpint(dark, <, total * 7 / 10);
++    }
++    cairo_destroy(cr);
++    cairo_surface_destroy(surface);
++    g_object_unref(page);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -697,5 +768,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/scripting", test_scripting);
+     g_test_add_func("/xfa/data", test_data);
+     g_test_add_func("/xfa/formcalc", test_formcalc);
++    g_test_add_func("/xfa/barcode", test_barcode);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index a3032fb..08beb2e 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -15,10 +15,15 @@
+ #include "XFAImage.h"
+ #include "XFAText.h"
+ 
++#if HAVE_XFA_BARCODES
++#    include <zint.h>
++#endif
++
+ #include <algorithm>
+ #include <cmath>
+ #include <cstring>
+ #include <map>
++#include <memory>
+ #include <optional>
+ 
+ namespace {
+@@ -292,6 +297,7 @@ private:
+     void drawField(const XFALayoutItem &item);
+     void drawCaption(XFANode *field, const XFAFieldGeometry &g, double x, double y);
+     void drawFieldValue(XFANode *field, const XFAFieldGeometry &g, double x, double y);
++    void drawBarcode(XFANode *field, double x, double y, double w, double h);
+     void addWidget(XFANode *field, const XFAFieldGeometry &g, double x, double y, double w, double h);
+     std::string da(const XFAFont &font) const;
+     int circleAppearance(double size, bool filled);
+@@ -749,6 +755,114 @@ void Writer::drawField(const XFALayoutItem &item)
+     }
+ }
+ 
++// Barcodes, encoded by Zint. Modules are moduleWidth wide, and the rows of
++// PDF417 symbols moduleHeight high; the symbol shrinks if it does not fit
++// the field.
++void Writer::drawBarcode(XFANode *field, double x, double y, double w, double h)
++{
++#if HAVE_XFA_BARCODES
++    const std::optional<std::string> value = form->getRawValue(field);
++    const XFANode *barcode = field->firstChild("ui")->firstChild("barcode");
++    if (!value || !barcode || ZBarcode_Version() < 21000) {
++        return;
++    }
++    static const struct
++    {
++        const char *xfa;
++        int zint;
++        bool linear;
++    } types[] = { { "pdf417", BARCODE_PDF417, false },
++                  { "QRCode", BARCODE_QRCODE, false },
++                  { "dataMatrix", BARCODE_DATAMATRIX, false },
++                  { "aztec", BARCODE_AZTEC, false },
++                  { "code128", BARCODE_CODE128, true },
++                  { "code128A", BARCODE_CODE128, true },
++                  { "code128B", BARCODE_CODE128, true },
++                  { "code128C", BARCODE_CODE128, true },
++                  { "code3Of9", BARCODE_CODE39, true },
++                  { "code3Of9extended", BARCODE_EXCODE39, true },
++                  { "code11", BARCODE_CODE11, true },
++                  { "code93", BARCODE_CODE93, true },
++                  { "codabar", BARCODE_CODABAR, true },
++                  { "code2Of5Interleaved", BARCODE_C25INTER, true },
++                  { "code2Of5Industrial", BARCODE_C25IND, true },
++                  { "code2Of5Standard", BARCODE_C25STANDARD, true },
++                  { "ean8", BARCODE_EANX, true },
++                  { "ean13", BARCODE_EANX, true },
++                  { "upcA", BARCODE_UPCA, true },
++                  { "upcE", BARCODE_UPCE, true },
++                  { "logmars", BARCODE_LOGMARS, true },
++                  { "msi", BARCODE_MSI_PLESSEY, true } };
++    const std::string type = barcode->getAttr("type", "");
++    const auto *t = std::ranges::find_if(types, [&type](const auto &e) { return type == e.xfa; });
++    if (t == std::end(types)) {
++        form->logMessage("unsupported barcode " + type);
++        return;
++    }
++    const double moduleW = XFAMeasureAttr(barcode, "moduleWidth", 0.25 * 72 / 25.4);
++    const double moduleH = XFAMeasureAttr(barcode, "moduleHeight", moduleW);
++    std::unique_ptr<zint_symbol, decltype(&ZBarcode_Delete)> symbol(ZBarcode_Create(), ZBarcode_Delete);
++    symbol->symbology = t->zint;
++    symbol->input_mode = DATA_MODE;
++    if (const std::string *level = barcode->getAttr("errorCorrectionLevel")) {
++        // PDF417 levels are 0 to 8; QR Code's L, M, Q, H are 1 to 4 in Zint.
++        symbol->option_1 = std::atoi(level->c_str()) + (t->zint == BARCODE_QRCODE ? 1 : 0);
++    }
++    if (t->zint == BARCODE_PDF417) {
++        // As many data columns as fit the field, unless given.
++        const int fit = static_cast<int>((w / moduleW - 69) / 17);
++        symbol->option_2 = barcode->getAttr("dataColumnCount") ? std::atoi(barcode->getAttr("dataColumnCount", "0").c_str()) : std::clamp(fit, 1, 30);
++        symbol->option_3 = std::atoi(barcode->getAttr("dataRowCount", "0").c_str());
++    }
++    const int error = ZBarcode_Encode(symbol.get(), reinterpret_cast<const unsigned char *>(value->data()), static_cast<int>(value->size()));
++    if (error >= ZINT_ERROR) {
++        form->logMessage("barcode " + type + ": " + symbol->errtxt);
++        return;
++    }
++    // Linear barcodes show their text below the bars, unless told otherwise.
++    if (t->linear && barcode->getAttr("textLocation", "below") != "none") {
++        const XFAFont font = XFAFontOf(field);
++        XFAPara para;
++        para.hAlign = "center";
++        h = std::max(0.0, h - font.lineHeight());
++        drawText(XFAParagraphsOfText(*value, font, para), para, x, y + h, w, font.lineHeight(), nullptr);
++    }
++    const int rows = t->linear ? 1 : symbol->rows;
++    double mw = moduleW;
++    double rowH = t->linear ? h : t->zint == BARCODE_PDF417 ? moduleH : moduleW;
++    const double scale = std::min({ 1.0, w / (symbol->width * mw), t->linear ? 1.0 : h / (rows * rowH) });
++    mw *= scale;
++    if (!t->linear) {
++        rowH *= scale;
++    }
++    const double ox = x + (w - symbol->width * mw) / 2;
++    const double oy = y + (h - rows * rowH) / 2;
++    std::string &ops = page->ops;
++    ops += "q\n0 g\n";
++    for (int r = 0; r < rows; ++r) {
++        for (int c = 0; c < symbol->width;) {
++            auto set = [&symbol, r](int col) { return (symbol->encoded_data[r][col >> 3] >> (col & 7)) & 1; };
++            if (!set(c)) {
++                ++c;
++                continue;
++            }
++            const int start = c;
++            while (c < symbol->width && set(c)) {
++                ++c;
++            }
++            ops += rect(ox + start * mw, oy + r * rowH, (c - start) * mw, rowH);
++        }
++    }
++    ops += "f\nQ\n";
++#else
++    (void)field;
++    (void)x;
++    (void)y;
++    (void)w;
++    (void)h;
++#endif
++}
++
+ // Fields without a widget show their value as page content.
+ void Writer::drawFieldValue(XFANode *field, const XFAFieldGeometry &g, double x, double y)
+ {
+@@ -765,7 +879,11 @@ void Writer::drawFieldValue(XFANode *field, const XFAFieldGeometry &g, double x,
+         }
+         return;
+     }
+-    if (ui == "signature" || ui == "barcode") {
++    if (ui == "barcode") {
++        drawBarcode(field, ux, uy, g.uiW, g.uiH);
++        return;
++    }
++    if (ui == "signature") {
+         return;
+     }
+     const std::optional<std::string> raw = form->getRawValue(field);
+-- 
+2.43.0
+

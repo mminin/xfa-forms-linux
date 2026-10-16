@@ -38,8 +38,6 @@ For the tested form, in the patched Evince:
 
 Known gaps, most of them found with the [corpus](corpus/README.md):
 
-- Barcode fields are not drawn, so IRCC's **Validate** button can't produce its 2D
-  barcodes.
 - FormCalc runs translated to JavaScript, without SOM predicates (`a.[b > 1]`), the
   financial functions or picture-clause functions such as `Format()`.
 - Data binding is simplified: values are matched to data by name, `dataRef` bindings
@@ -56,12 +54,14 @@ Known gaps, most of them found with the [corpus](corpus/README.md):
 
 ```
 PDF with dynamic XFA ──► Poppler XFA engine ──► generated PDF pages with form fields ──► Evince
-                          │ XFANode    XML parser, template and form DOM
-                          │ XFAForm    instance managers, SOM expressions, values, events
-                          │ XFAScript  QuickJS + the XFA object model
-                          │ XFALayout  page areas, flowed and positioned layout, page breaks
-                          │ XFAText    font metrics, rich text, line breaking
-                          │ XFAWriter  content streams, widgets, images, PDF assembly
+                          │ XFANode     XML parser, template, form and data DOMs
+                          │ XFAForm     instance managers, SOM expressions, values, events, data
+                          │ XFAScript   QuickJS + the XFA object model
+                          │ XFAFormCalc FormCalc, translated to JavaScript
+                          │ XFALayout   page areas, flowed, positioned and table layout, page breaks
+                          │ XFAText     font metrics, rich text, line breaking
+                          │ XFAImage    JPEG, PNG, GIF, BMP and TIFF images
+                          │ XFAWriter   content streams, widgets, barcodes, PDF assembly
                           ▲
   field edits (poppler-glib setters) ┘ → form scripts run → Evince swaps in the re-rendered pages
 ```
@@ -70,7 +70,8 @@ PDF with dynamic XFA ──► Poppler XFA engine ──► generated PDF pages 
   `pdfxfa [-set som=value]... [-click som]... [-print] in.pdf out.pdf`.
   [QuickJS-ng](https://github.com/quickjs-ng/quickjs) runs the scripts and is an
   optional dependency (`ENABLE_XFA_SCRIPTING`); without it, forms are laid out in
-  their initial state and no scripts run. poppler-glib gains
+  their initial state and no scripts run. [Zint](https://zint.org.uk/) encodes
+  barcodes, also optionally (`ENABLE_XFA_BARCODES`). poppler-glib gains
   `poppler_document_get_form_type()`, `poppler_document_render_xfa()` and calls to
   collect messages, URLs and print requests that scripts make.
 - **Evince**: the PDF backend renders XFA forms after loading. When an edit changes
@@ -143,6 +144,8 @@ Poppler (`patches/poppler/`, about 8,800 added lines):
 | 0013 | Scripting object model: form variables, script objects, item lists, colors and more |
 | 0014 | The data DOM: `xfa.datasets`, drop-down lists bound to data, global fields, initial data |
 | 0015 | FormCalc, translated to JavaScript |
+| 0016 | Validation scripts of immigration forms: validation messages, `oneOfChild` |
+| 0017 | Barcodes, drawn with Zint |
 
 Evince (`patches/evince/`, about 600 added lines):
 
@@ -186,8 +189,8 @@ reference while writing the engine.
 ## License
 
 GPL-2.0-or-later, the same as Poppler and Evince; see `COPYING`. The patches are
-contributions to those projects under their licenses. QuickJS-ng is MIT-licensed;
-it is downloaded by `bootstrap.sh`, not included here.
+contributions to those projects under their licenses. QuickJS-ng (MIT) and Zint's
+library (BSD-3-Clause) are downloaded by `bootstrap.sh`, not included here.
 
 The tested form belongs to the Government of Canada and is not included in this
 repository; `scripts/fetch-sample.sh` downloads it from the official site.

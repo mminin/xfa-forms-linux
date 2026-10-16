@@ -11,6 +11,13 @@ cmake -S "$ROOT/upstream/quickjs" -B "$ROOT/_build/quickjs" -G Ninja \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF
 ninja -C "$ROOT/_build/quickjs" install
 
+# Zint draws the barcodes of XFA forms; static, linked into libpoppler.
+cmake -S "$ROOT/upstream/zint" -B "$ROOT/_build/zint" -G Ninja \
+    -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DZINT_SHARED=OFF -DZINT_STATIC=ON -DZINT_FRONTEND=OFF -DZINT_USE_PNG=OFF -DZINT_USE_QT=OFF \
+    -DZINT_USE_GS1SE=OFF -DZINT_UNINSTALL=OFF
+ninja -C "$ROOT/_build/zint" install
+
 cmake -S "$ROOT/upstream/poppler" -B "$ROOT/_build/poppler" -G Ninja \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_INSTALL_RPATH="$PREFIX/lib" \
