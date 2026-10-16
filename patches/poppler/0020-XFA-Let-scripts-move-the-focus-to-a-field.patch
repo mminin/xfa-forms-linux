@@ -1,0 +1,268 @@
+From adbce142ed50ef95a5426a646548022e6ec8441e Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:28:23 -0700
+Subject: [PATCH] XFA: Let scripts move the focus to a field
+
+Forms call xfa.host.setFocus() to take users to a field, most often
+the first one to correct after validation. It did nothing.
+
+It now records a request that viewers take with the new
+poppler_document_xfa_take_focus_request(), as they take messages, URLs
+and print requests. pdfxfa prints it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/poppler-document.cc            | 23 +++++++++++++
+ glib/poppler-document.h             |  2 ++
+ glib/reference/poppler-sections.txt |  1 +
+ glib/tests/check_xfa.c              | 50 +++++++++++++++++++++++++++++
+ poppler/XFAForm.cc                  |  9 ++++++
+ poppler/XFAForm.h                   |  9 ++++--
+ poppler/XFAScript.cc                | 20 ++++++++++--
+ utils/pdfxfa.cc                     |  3 ++
+ 8 files changed, 112 insertions(+), 5 deletions(-)
+
+diff --git a/glib/poppler-document.cc b/glib/poppler-document.cc
+index 00a60db..6c04a6e 100644
+--- a/glib/poppler-document.cc
++++ b/glib/poppler-document.cc
+@@ -2475,6 +2475,29 @@ gboolean poppler_document_xfa_take_print_request(PopplerDocument *document, gint
+     return TRUE;
+ }
+ 
++/**
++ * poppler_document_xfa_take_focus_request:
++ * @document: A #PopplerDocument made by poppler_document_render_xfa()
++ *
++ * Returns the field the scripts of the XFA form last asked to move the
++ * focus to, and forgets the request. The field is named as
++ * poppler_form_field_get_partial_name() names it.
++ *
++ * Return value: (transfer full) (nullable): the name of the field, or %NULL
++ *
++ * Since: 26.11
++ **/
++gchar *poppler_document_xfa_take_focus_request(PopplerDocument *document)
++{
++    g_return_val_if_fail(POPPLER_IS_DOCUMENT(document), nullptr);
++
++    if (!document->xfa) {
++        return nullptr;
++    }
++    const std::vector<XFAHostRequest> requests = document->xfa->takeHostRequests(XFAHostRequest::Type::Focus);
++    return requests.empty() ? nullptr : g_strdup(requests.back().text.c_str());
++}
++
+ /**
+  * poppler_document_has_javascript:
+  * @document: A #PopplerDocument
+diff --git a/glib/poppler-document.h b/glib/poppler-document.h
+index 5279ce7..175e296 100644
+--- a/glib/poppler-document.h
++++ b/glib/poppler-document.h
+@@ -457,6 +457,8 @@ POPPLER_PUBLIC
+ gchar **poppler_document_xfa_take_urls(PopplerDocument *document);
+ POPPLER_PUBLIC
+ gboolean poppler_document_xfa_take_print_request(PopplerDocument *document, gint *first_page, gint *last_page);
++POPPLER_PUBLIC
++gchar *poppler_document_xfa_take_focus_request(PopplerDocument *document);
+ /* Javascript */
+ POPPLER_PUBLIC
+ gboolean poppler_document_has_javascript(PopplerDocument *document);
+diff --git a/glib/reference/poppler-sections.txt b/glib/reference/poppler-sections.txt
+index 6da3313..a7ab52a 100644
+--- a/glib/reference/poppler-sections.txt
++++ b/glib/reference/poppler-sections.txt
+@@ -226,6 +226,7 @@ poppler_document_set_title
+ poppler_document_xfa_needs_rerender
+ poppler_document_xfa_take_messages
+ poppler_document_xfa_take_print_request
++poppler_document_xfa_take_focus_request
+ poppler_document_xfa_take_urls
+ poppler_font_info_free
+ poppler_font_info_new
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index df2f68d..42c8fe5 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -920,6 +920,55 @@ static void test_pagination(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* xfa.host.setFocus() asks the viewer to move to a field. */
++static const char *focus_xdp = "<?xml version=\"1.0\"?>\n"
++                               "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                               "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                               "<subform name=\"form1\" layout=\"tb\">"
++                               "<pageSet><pageArea name=\"Page1\">"
++                               "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                               "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/>"
++                               "</pageArea></pageSet>"
++                               "<field name=\"go\" w=\"2in\" h=\"0.4in\"><ui><button/></ui><assist><toolTip>Go</toolTip></assist>"
++                               "<event activity=\"click\"><script contentType=\"application/x-javascript\">xfa.host.setFocus(\"Section.target\");</script></event></field>"
++                               "<subform name=\"Section\" layout=\"tb\">"
++                               "<field name=\"target\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui><assist><toolTip>Target</toolTip></assist></field>"
++                               "</subform>"
++                               "</subform>"
++                               "</template>"
++                               "</xdp:xdp>";
++
++static void test_focus(void)
++{
++    GBytes *bytes = build_pdf_from(focus_xdp);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    PopplerFormField *go = field_named(rendered, "Go");
++    PopplerFormField *target = field_named(rendered, "Target");
++    g_assert_nonnull(go);
++    g_assert_nonnull(target);
++    g_assert_null(poppler_document_xfa_take_focus_request(rendered));
++    poppler_form_field_button_set_state(go, TRUE);
++    char *focus = poppler_document_xfa_take_focus_request(rendered);
++    if (!focus) {
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        char *name = poppler_form_field_get_partial_name(target);
++        g_assert_cmpstr(focus, ==, name);
++        g_free(name);
++        g_assert_null(poppler_document_xfa_take_focus_request(rendered));
++    }
++    g_free(focus);
++    g_object_unref(go);
++    g_object_unref(target);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -935,5 +984,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/barcode", test_barcode);
+     g_test_add_func("/xfa/pictures", test_pictures);
+     g_test_add_func("/xfa/pagination", test_pagination);
++    g_test_add_func("/xfa/focus", test_focus);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 9816efb..50d0f32 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -1615,6 +1615,15 @@ void XFAForm::hostPrint(int firstPage, int lastPage)
+     requests.push_back({ XFAHostRequest::Type::Print, {}, {}, firstPage, lastPage });
+ }
+ 
++void XFAForm::hostFocus(XFANode *field)
++{
++    // Only the last request counts.
++    std::erase_if(requests, [](const XFAHostRequest &r) { return r.type == XFAHostRequest::Type::Focus; });
++    if (field && field->getClassName() == "field") {
++        requests.push_back({ XFAHostRequest::Type::Focus, {}, "xfa" + std::to_string(field->getSerial()), -1, -1 });
++    }
++}
++
+ std::vector<XFAHostRequest> XFAForm::takeHostRequests()
+ {
+     return std::exchange(requests, {});
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index 196cc78..7349669 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -30,18 +30,20 @@ class XFAScript;
+ struct XFALayoutResult;
+ 
+ // Something the form wants the viewer to do: show a message, open a URL,
+-// print. Message boxes are answered with "Yes" so scripts can continue.
++// print, or move the focus to a field. Message boxes are answered with
++// "Yes" so scripts can continue.
+ struct XFAHostRequest
+ {
+     enum class Type
+     {
+         Message,
+         LaunchURL,
+-        Print
++        Print,
++        Focus
+     };
+     Type type;
+     std::string title;
+-    std::string text; // message text, or URL
++    std::string text; // message text, URL, or field name as in the generated PDF
+     int firstPage = -1; // for Print, 0-based, -1 for all pages
+     int lastPage = -1;
+ };
+@@ -207,6 +209,7 @@ public:
+     void hostMessage(const std::string &title, const std::string &text);
+     void hostLaunchURL(const std::string &url);
+     void hostPrint(int firstPage, int lastPage);
++    void hostFocus(XFANode *field);
+     void resetData(XFANode *subtree);
+     void logMessage(const std::string &msg);
+ 
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 5d9ccab..485ab43 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -425,7 +425,16 @@ var xfa = {
+             return buttons === 2 || buttons === 3 ? 4 : 1;
+         },
+         response: function (q, t, def) { return def === undefined ? "" : def; },
+-        setFocus: function () {},
++        setFocus: function (x) {
++            var id = null;
++            if (typeof x === "string") {
++                var r = resolveGlobal(x);
++                id = r.length ? r[0] : null;
++            } else {
++                id = idOf(x);
++            }
++            N.focus(id);
++        },
+         beep: function () {},
+         openList: function () {},
+         importData: function () {},
+@@ -1381,6 +1390,12 @@ NATIVE(message)
+     return JS_UNDEFINED;
+ }
+ 
++NATIVE(focus)
++{
++    formOf(ctx)->hostFocus(nodeArg(ctx, ARG(0)));
++    return JS_UNDEFINED;
++}
++
+ NATIVE(launchURL)
+ {
+     formOf(ctx)->hostLaunchURL(strArg(ctx, ARG(0)));
+@@ -1606,7 +1621,8 @@ const NativeEntry natives[] = { ENTRY(alive, 1),
+                                 ENTRY(datasets, 0),
+                                 ENTRY(dataRoot, 0),
+                                 ENTRY(editValue, 1),
+-                                ENTRY(setFormattedValue, 2) };
++                                ENTRY(setFormattedValue, 2),
++                                ENTRY(focus, 1) };
+ 
+ int interruptHandler(JSContext *, void *opaque)
+ {
+diff --git a/utils/pdfxfa.cc b/utils/pdfxfa.cc
+index 21b2783..5b44896 100644
+--- a/utils/pdfxfa.cc
++++ b/utils/pdfxfa.cc
+@@ -148,6 +148,9 @@ int main(int argc, char *argv[])
+         case XFAHostRequest::Type::Print:
+             fprintf(stderr, "print pages %d to %d\n", r.firstPage + 1, r.lastPage + 1);
+             break;
++        case XFAHostRequest::Type::Focus:
++            fprintf(stderr, "focus field %s\n", r.text.c_str());
++            break;
+         }
+     }
+ 
+-- 
+2.43.0
+

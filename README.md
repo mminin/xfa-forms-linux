@@ -48,8 +48,8 @@ Known gaps, most of them found with the [corpus](corpus/README.md):
   and black faces. Nothing is embedded.
 - Images are drawn from JPEG, PNG, GIF, BMP and TIFF data; SVG and external
   (linked) images are not.
-- `xfa.host.setFocus` does nothing. Script message boxes are answered "Yes"/"OK"
-  automatically and then shown.
+- Script message boxes are answered "Yes"/"OK" automatically and then shown, and
+  `xfa.host.response()` prompts get their default answer.
 
 ## How it works
 
@@ -130,7 +130,7 @@ touching your desktop. See the comments in `run-session.sh` and `drive.py`.
 
 ## Patches
 
-Poppler (`patches/poppler/`, about 8,800 added lines):
+Poppler (`patches/poppler/`, about 12,300 added lines):
 
 | Patch | What it does |
 |---|---|
@@ -149,8 +149,9 @@ Poppler (`patches/poppler/`, about 8,800 added lines):
 | 0017 | Barcodes, drawn with Zint |
 | 0018 | Picture clauses for display, editing and validation; validation results |
 | 0019 | Pagination: page breaks after objects, keeping objects together, repeated table headers |
+| 0020 | `xfa.host.setFocus()`: scripts move the viewer to a field |
 
-Evince (`patches/evince/`, about 600 added lines):
+Evince (`patches/evince/`, about 650 added lines):
 
 | Patch | What it does |
 |---|---|
@@ -161,6 +162,7 @@ Evince (`patches/evince/`, about 600 added lines):
 | 0005 | Sidebar thumbnails stayed blank until something scrolled |
 | 0006–0007 | Keep editing the field you went to when a form re-renders |
 | 0008 | Ctrl+A selects the text of the field being edited, not the whole document |
+| 0009 | Move to the field that form scripts ask for, such as the first one to correct |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.

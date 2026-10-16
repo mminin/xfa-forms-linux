@@ -1,0 +1,161 @@
+From 6163e9a9d9e41bf33a78741c6300add7cfc5b773 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:28:23 -0700
+Subject: [PATCH] libview: Move to the form field that form scripts ask for
+
+Scripts of forms move users to a field, most often the first one to
+correct after validation. Take these requests from the document, go to
+the page of the field and edit it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/pdf/ev-poppler.c        | 11 ++++++++++
+ libdocument/ev-document-forms.c | 19 ++++++++++++++++
+ libdocument/ev-document-forms.h |  3 +++
+ libview/ev-view.c               | 39 +++++++++++++++++++++++++++++++--
+ 4 files changed, 70 insertions(+), 2 deletions(-)
+
+diff --git a/backend/pdf/ev-poppler.c b/backend/pdf/ev-poppler.c
+index b0e141b..c21086f 100644
+--- a/backend/pdf/ev-poppler.c
++++ b/backend/pdf/ev-poppler.c
+@@ -2636,6 +2636,16 @@ pdf_document_forms_take_print_request (EvDocumentForms *document,
+ #endif
+ }
+ 
++static gchar *
++pdf_document_forms_take_focus_request (EvDocumentForms *document)
++{
++#ifdef HAVE_POPPLER_XFA
++	return poppler_document_xfa_take_focus_request (PDF_DOCUMENT (document)->document);
++#else
++	return NULL;
++#endif
++}
++
+ static void
+ pdf_document_document_forms_iface_init (EvDocumentFormsInterface *iface)
+ {
+@@ -2658,6 +2668,7 @@ pdf_document_document_forms_iface_init (EvDocumentFormsInterface *iface)
+ 	iface->take_messages = pdf_document_forms_take_messages;
+ 	iface->take_urls = pdf_document_forms_take_urls;
+ 	iface->take_print_request = pdf_document_forms_take_print_request;
++	iface->take_focus_request = pdf_document_forms_take_focus_request;
+ }
+ 
+ /* Annotations */
+diff --git a/libdocument/ev-document-forms.c b/libdocument/ev-document-forms.c
+index a68d0ef..650e04a 100644
+--- a/libdocument/ev-document-forms.c
++++ b/libdocument/ev-document-forms.c
+@@ -273,3 +273,22 @@ ev_document_forms_take_print_request (EvDocumentForms *document_forms,
+ 
+ 	return requested;
+ }
++
++/**
++ * ev_document_forms_take_focus_request:
++ * @document_forms: an #EvDocumentForms
++ *
++ * Returns the field the scripts of the form last asked to move the focus
++ * to since the last call, named as ev_form_field_get_name() names it.
++ *
++ * Returns: (transfer full) (nullable): the name of the field, or %NULL
++ *
++ * Since: 49.0
++ */
++gchar *
++ev_document_forms_take_focus_request (EvDocumentForms *document_forms)
++{
++	EvDocumentFormsInterface *iface = EV_DOCUMENT_FORMS_GET_IFACE (document_forms);
++
++	return iface->take_focus_request ? iface->take_focus_request (document_forms) : NULL;
++}
+diff --git a/libdocument/ev-document-forms.h b/libdocument/ev-document-forms.h
+index f823378..ba2bf96 100644
+--- a/libdocument/ev-document-forms.h
++++ b/libdocument/ev-document-forms.h
+@@ -85,6 +85,7 @@ struct _EvDocumentFormsInterface
+ 	gboolean       (* take_print_request)                 (EvDocumentForms   *document_forms,
+ 							       gint              *first_page,
+ 							       gint              *last_page);
++	gchar         *(* take_focus_request)                 (EvDocumentForms   *document_forms);
+ };
+ 
+ EV_PUBLIC
+@@ -152,5 +153,7 @@ EV_PUBLIC
+ gboolean       ev_document_forms_take_print_request                 (EvDocumentForms   *document_forms,
+ 								     gint              *first_page,
+ 								     gint              *last_page);
++EV_PUBLIC
++gchar         *ev_document_forms_take_focus_request                 (EvDocumentForms   *document_forms);
+ 
+ G_END_DECLS
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 78b255f..85a9b92 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2584,9 +2584,38 @@ ev_view_page_cached_cb (EvPageCache *page_cache,
+ 	}
+ }
+ 
++/* Goes to the page of the form field named name and edits the field, now if
++ * the page is ready, or else once it is. */
++static void
++ev_view_focus_form_field_by_name (EvView      *view,
++				  const gchar *name)
++{
++	EvViewPrivate *priv = GET_PRIVATE (view);
++	EvDocumentForms *forms = EV_DOCUMENT_FORMS (priv->document);
++	gint n_pages = ev_document_get_n_pages (priv->document);
++
++	for (gint i = 0; i < n_pages; i++) {
++		EvPage *page = ev_document_get_page (priv->document, i);
++		EvMappingList *mapping = ev_document_forms_get_form_fields (forms, page);
++		gboolean found = FALSE;
++
++		for (GList *l = mapping ? ev_mapping_list_get_list (mapping) : NULL; l && !found; l = l->next)
++			found = g_strcmp0 (ev_form_field_get_name (((EvMapping *) l->data)->data), name) == 0;
++		g_clear_pointer (&mapping, ev_mapping_list_unref);
++		g_object_unref (page);
++		if (found) {
++			g_free (priv->refocus_field_name);
++			priv->refocus_field_name = g_strdup (name);
++			ev_document_model_set_page (priv->model, i);
++			ev_view_page_cached_cb (priv->page_cache, i, view);
++			return;
++		}
++	}
++}
++
+ /* Some forms run scripts when their fields change: they can ask to show
+- * messages, open URLs or print, and can change the pages of the document,
+- * which then has to be replaced. */
++ * messages, open URLs, print or move to a field, and can change the pages
++ * of the document, which then has to be replaced. */
+ static void
+ ev_view_apply_form_changes (EvView *view)
+ {
+@@ -2594,6 +2623,7 @@ ev_view_apply_form_changes (EvView *view)
+ 	EvDocumentForms *forms;
+ 	EvDocument *rerendered;
+ 	gchar **strv;
++	g_autofree gchar *focus = NULL;
+ 	gint first_page, last_page;
+ 
+ 	priv->form_changes_idle_id = 0;
+@@ -2646,6 +2676,11 @@ ev_view_apply_form_changes (EvView *view)
+ 		priv->refocus_field_name = g_steal_pointer (&edited);
+ 	}
+ 
++	/* Scripts move to fields, often one to correct */
++	focus = ev_document_forms_take_focus_request (forms);
++	if (focus && priv->document && EV_IS_DOCUMENT_FORMS (priv->document))
++		ev_view_focus_form_field_by_name (view, focus);
++
+ 	if (ev_document_forms_take_print_request (forms, &first_page, &last_page)) {
+ 		if (first_page >= 0 && last_page >= first_page)
+ 			gtk_widget_activate_action (GTK_WIDGET (view), "win.print-range",
+-- 
+2.43.0
+
