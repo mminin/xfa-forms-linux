@@ -1,0 +1,1394 @@
+From fbe04396b70f7e9eddbb2ad28678e32f672c2047 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 16:17:13 -0700
+Subject: [PATCH] XFA: Format values with picture clauses, and validate them
+
+Values were shown as stored: 1234.5 instead of $1,234.50, 123456789
+instead of 123 456 789. Picture clauses are used by most fields of tax
+and immigration forms.
+
+Numeric, date and text picture clauses now format values for display
+(<format>) and editing (<ui>), and parse what is typed back into the
+stored value. Values that do not fit a picture show as they are, as do
+those of comb fields and of fields too short for the formatted text.
+
+Validation now follows <validate>: values must fit its picture clause,
+validate scripts that evaluate to false fail, and execValidate() also
+checks required fields. After an edit, the first failure is reported
+with the form's message for it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt         |   1 +
+ glib/tests/check_xfa.c |  91 +++++
+ poppler/XFAForm.cc     | 154 ++++++--
+ poppler/XFAForm.h      |  15 +-
+ poppler/XFAPicture.cc  | 782 +++++++++++++++++++++++++++++++++++++++++
+ poppler/XFAPicture.h   |  32 ++
+ poppler/XFAScript.cc   |  91 ++++-
+ poppler/XFAWriter.cc   |   5 +-
+ 8 files changed, 1137 insertions(+), 34 deletions(-)
+ create mode 100644 poppler/XFAPicture.cc
+ create mode 100644 poppler/XFAPicture.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c9eddb0..cc3678e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -460,6 +460,7 @@ set(poppler_SRCS
+   poppler/XFAForm.cc
+   poppler/XFAFormCalc.cc
+   poppler/XFAImage.cc
++  poppler/XFAPicture.cc
+   poppler/XFALayout.cc
+   poppler/XFANode.cc
+   poppler/XFAScript.cc
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 086302a..3cb2657 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -756,6 +756,96 @@ static void test_barcode(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* Picture clauses: values shown formatted, typed text parsed back, and
++ * values checked against validation pictures. */
++static const char *picture_xdp = "<?xml version=\"1.0\"?>\n"
++                                 "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                                 "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                                 "<subform name=\"form1\" layout=\"tb\" locale=\"en_CA\">"
++                                 "<pageSet><pageArea name=\"Page1\">"
++                                 "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                                 "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/>"
++                                 "</pageArea></pageSet>"
++                                 "<field name=\"amount\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><numericEdit/></ui>"
++                                 "<format><picture>num{$z,zzz,zz9.99}</picture></format><value><decimal>1234.5</decimal></value></field>"
++                                 "<field name=\"sin\" w=\"3in\" h=\"0.3in\"><ui><textEdit/><picture>text{999999999}|text{999 999 999}</picture></ui>"
++                                 "<assist><toolTip>SIN</toolTip></assist>"
++                                 "<format><picture>text{999 999 999}</picture></format><value><text>123456789</text></value></field>"
++                                 "<field name=\"date\" w=\"3in\" h=\"0.3in\"><ui><textEdit/></ui><assist><toolTip>Date</toolTip></assist>"
++                                 "<validate formatTest=\"error\"><picture>date{YYYY-MM-DD}</picture><message><text name=\"formatTest\">Bad date</text></message></validate></field>"
++                                 "</subform>"
++                                 "</template>"
++                                 "</xdp:xdp>";
++
++static PopplerFormField *field_named(PopplerDocument *doc, const char *tooltip)
++{
++    PopplerPage *page = poppler_document_get_page(doc, 0);
++    GList *mapping = poppler_page_get_form_field_mapping(page);
++    PopplerFormField *field = NULL;
++    for (GList *l = mapping; l && !field; l = l->next) {
++        PopplerFormFieldMapping *m = l->data;
++        char *name = poppler_form_field_get_alternate_ui_name(m->field);
++        if (g_strcmp0(name, tooltip) == 0) {
++            field = g_object_ref(m->field);
++        }
++        g_free(name);
++    }
++    poppler_page_free_form_field_mapping(mapping);
++    g_object_unref(page);
++    return field;
++}
++
++static void test_pictures(void)
++{
++    GBytes *bytes = build_pdf_from(picture_xdp);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    char *text = page_text(rendered);
++    g_assert_nonnull(strstr(text, "$1,234.50"));
++    g_free(text);
++
++    PopplerFormField *sin = field_named(rendered, "SIN");
++    g_assert_nonnull(sin);
++    text = poppler_form_field_text_get_text(sin);
++    g_assert_cmpstr(text, ==, "123 456 789");
++    g_free(text);
++    poppler_form_field_text_set_text(sin, "987654321");
++    g_object_unref(sin);
++    if (poppler_document_xfa_needs_rerender(rendered)) {
++        PopplerDocument *rerendered = poppler_document_render_xfa(rendered, &err);
++        g_assert_no_error(err);
++        sin = field_named(rerendered, "SIN");
++        text = poppler_form_field_text_get_text(sin);
++        g_assert_cmpstr(text, ==, "987 654 321");
++        g_free(text);
++        g_object_unref(sin);
++        g_object_unref(rendered);
++        rendered = rerendered;
++    } else {
++        g_test_fail_printf("the formatted value is not shown");
++    }
++
++    PopplerFormField *date = field_named(rendered, "Date");
++    g_assert_nonnull(date);
++    poppler_form_field_text_set_text(date, "2024-13-45");
++    g_object_unref(date);
++    gchar **messages = poppler_document_xfa_take_messages(rendered);
++    g_assert_nonnull(messages);
++    gboolean found = FALSE;
++    for (gchar **m = messages; *m; ++m) {
++        found = found || strstr(*m, "Bad date") != NULL;
++    }
++    g_assert_true(found);
++    g_strfreev(messages);
++
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -769,5 +859,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/data", test_data);
+     g_test_add_func("/xfa/formcalc", test_formcalc);
+     g_test_add_func("/xfa/barcode", test_barcode);
++    g_test_add_func("/xfa/pictures", test_pictures);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index a650b17..9816efb 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -18,6 +18,7 @@
+ #include "Stream.h"
+ #include "XFAFormCalc.h"
+ #include "XFALayout.h"
++#include "XFAPicture.h"
+ #include "XFAScript.h"
+ #include "XFAWriter.h"
+ 
+@@ -1170,6 +1171,72 @@ void XFAForm::setRawValue(XFANode *node, const std::optional<std::string> &value
+     }
+ }
+ 
++// The picture clause of a field for display ("format"), editing ("ui"),
++// validation ("validate") or data ("bind").
++static std::string pictureOf(const XFANode *node, const char *where)
++{
++    const XFANode *holder = node->firstChild(where);
++    const XFANode *picture = holder ? holder->firstChild("picture") : nullptr;
++    return picture ? picture->textContent() : std::string();
++}
++
++std::string XFAForm::localeOf(const XFANode *node) const
++{
++    for (const XFANode *n = node; n; n = n->getParent()) {
++        if (const std::string *l = n->getAttr("locale"); l && !l->empty() && *l != "ambient") {
++            return *l;
++        }
++    }
++    return language;
++}
++
++std::string XFAForm::getEditValue(XFANode *node) const
++{
++    const std::optional<std::string> raw = getRawValue(node);
++    const std::string picture = node->getClassName() == "field" ? pictureOf(node, "ui") : std::string();
++    if (!raw || picture.empty()) {
++        return raw.value_or("");
++    }
++    return XFAPictureFormat(picture, *raw, localeOf(node)).value_or(*raw);
++}
++
++std::optional<std::string> XFAForm::getWidgetValue(XFANode *node) const
++{
++    const std::optional<std::string> raw = getRawValue(node);
++    const std::string ui = uiClass(node);
++    if (!raw || (ui != "textEdit" && ui != "numericEdit" && ui != "dateTimeEdit")) {
++        return raw;
++    }
++    const std::string formatted = getFormattedValue(node);
++    const XFANode *value = node->firstChild("value");
++    const XFANode *text = value ? value->firstChild("text") : nullptr;
++    const XFANode *comb = node->firstChild("ui")->firstChild(ui)->firstChild("comb");
++    const long maxChars = text ? std::atol(text->getAttr("maxChars", "0").c_str()) : 0;
++    if (comb || (maxChars > 0 && static_cast<long>(formatted.size()) > maxChars)) {
++        return raw;
++    }
++    return formatted;
++}
++
++void XFAForm::setFormattedValue(XFANode *node, const std::string &text)
++{
++    if (text.empty() || node->getClassName() != "field") {
++        setRawValue(node, text.empty() ? std::nullopt : std::optional<std::string>(text));
++        return;
++    }
++    const std::string locale = localeOf(node);
++    for (const char *where : { "ui", "format" }) {
++        const std::string picture = pictureOf(node, where);
++        if (!picture.empty()) {
++            if (const std::optional<std::string> v = XFAPictureParse(picture, text, locale)) {
++                setRawValue(node, v);
++                return;
++            }
++        }
++    }
++    setRawValue(node, text);
++}
++
+ std::string XFAForm::getFormattedValue(XFANode *node) const
+ {
+     const std::optional<std::string> raw = getRawValue(node);
+@@ -1184,8 +1251,13 @@ std::string XFAForm::getFormattedValue(XFANode *node) const
+                 return displays[i];
+             }
+         }
++        return *raw;
++    }
++    const std::string picture = node->getClassName() == "field" ? pictureOf(node, "format") : std::string();
++    if (picture.empty()) {
++        return *raw;
+     }
+-    return *raw;
++    return XFAPictureFormat(picture, *raw, localeOf(node)).value_or(*raw);
+ }
+ 
+ std::string XFAForm::getPresence(const XFANode *node) const
+@@ -1315,29 +1387,72 @@ void XFAForm::runCalculations()
+     --calcDepth;
+ }
+ 
+-bool XFAForm::runValidations(XFANode *node)
++bool XFAForm::runValidations(XFANode *node, bool nullTests, bool report)
+ {
++    bool ok = true;
+     std::vector<int> serials;
+     preorder(node, serials);
+     for (int serial : serials) {
+         XFANode *n = formDom.lookup(serial);
+-        if (!n) {
++        if (!n || (n->getClassName() != "field" && n->getClassName() != "exclGroup") || !isLaidOut(n)) {
+             continue;
+         }
+-        const XFANode *s = scriptOf(n->firstChild("validate"));
+-        if (!s) {
++        const XFANode *validate = n->firstChild("validate");
++        if (!validate) {
+             continue;
+         }
+-        bool runnable;
+-        const std::string src = scriptSource(s, &runnable);
+-        if (runnable) {
+-            EventContext ctx;
+-            ctx.activity = "validate";
+-            ctx.target = n;
+-            script->run(n, src, &ctx);
++        // The test that failed, and its message.
++        std::string failed;
++        const std::optional<std::string> raw = getRawValue(n);
++        const std::string picture = pictureOf(n, "validate");
++        if (nullTests && !raw && validate->getAttr("nullTest", "disabled") != "disabled") {
++            failed = "nullTest";
++        } else if (raw && !picture.empty() && !XFAPictureFormat(picture, *raw, localeOf(n))) {
++            failed = "formatTest";
++        } else if (const XFANode *s = scriptOf(validate)) {
++            bool runnable;
++            const std::string src = scriptSource(s, &runnable);
++            if (runnable) {
++                EventContext ctx;
++                ctx.activity = "validate";
++                ctx.target = n;
++                const XFAScript::Result r = script->run(n, src, &ctx);
++                if (r.ok && !r.undefined && (r.null || r.value == "0" || r.value == "false")) {
++                    failed = "scriptTest";
++                }
++            }
++            n = formDom.lookup(serial);
++            if (!n) {
++                continue;
++            }
++        }
++        if (failed.empty()) {
++            continue;
++        }
++        const std::string level = validate->getAttr(failed, failed == "scriptTest" ? "error" : failed == "formatTest" ? "warning" : "disabled");
++        if (level == "disabled") {
++            continue;
++        }
++        ok = false;
++        if (report) {
++            std::string text;
++            if (const XFANode *message = validate->firstChild("message")) {
++                for (const XFANode *t : message->childrenOfClass("text")) {
++                    if (t->getName() == failed) {
++                        text = t->textContent();
++                    }
++                }
++            }
++            if (text.empty()) {
++                const XFANode *caption = n->firstChild("caption");
++                const std::string label = caption ? caption->textContent() : std::string();
++                text = failed == "nullTest" ? (label.empty() ? n->getName() : label) + " must have a value." : (label.empty() ? n->getName() : label) + ": the value is not valid.";
++            }
++            hostMessage("", text);
++            report = false; // one message is enough
+         }
+     }
+-    return true;
++    return ok;
+ }
+ 
+ void XFAForm::fireEnterEvents(XFANode *node)
+@@ -1738,7 +1853,7 @@ void XFAForm::collectFieldValues(XFANode *node, std::vector<std::pair<int, std::
+             continue;
+         }
+         if (c->getClassName() == "field" || c->getClassName() == "exclGroup") {
+-            const std::optional<std::string> v = getRawValue(c.get());
++            const std::optional<std::string> v = c->getClassName() == "field" ? getWidgetValue(c.get()) : getRawValue(c.get());
+             values.emplace_back(c->getSerial(), v ? "=" + *v : std::string("null"));
+         }
+         if (c->getClassName() != "field") {
+@@ -1843,16 +1958,15 @@ bool XFAForm::setFieldText(const std::string &fieldName, const std::string &valu
+     ctx.newText = value;
+     ctx.change = value;
+     fireEvent(field, "change", &ctx);
+-    const std::optional<std::string> v = value.empty() ? std::nullopt : std::optional<std::string>(value);
+     if ((field = formDom.lookup(serial))) {
+-        setRawValue(field, v);
++        setFormattedValue(field, value);
+         fireEvent(field, "exit");
+     }
+     if ((field = formDom.lookup(serial))) {
+-        runValidations(field);
++        runValidations(field, false, true);
+     }
+     runCalculations();
+-    return afterChange(formDom.lookup(serial), v);
++    return afterChange(formDom.lookup(serial), value.empty() ? std::nullopt : std::optional<std::string>(value));
+ }
+ 
+ bool XFAForm::setFieldChoice(const std::string &fieldName, int index)
+@@ -1883,7 +1997,7 @@ bool XFAForm::setFieldChoice(const std::string &fieldName, int index)
+         fireEvent(field, "exit");
+     }
+     if ((field = formDom.lookup(serial))) {
+-        runValidations(field);
++        runValidations(field, false, true);
+     }
+     runCalculations();
+     return afterChange(formDom.lookup(serial), saves[index]);
+@@ -1943,7 +2057,7 @@ bool XFAForm::setButtonState(const std::string &fieldName, const std::string &on
+     }
+     if (groupSerial && (group = formDom.lookup(groupSerial))) {
+         fireEvent(group, "exit");
+-        runValidations(group);
++        runValidations(group, false, true);
+     }
+     runCalculations();
+     XFANode *edited = groupSerial ? formDom.lookup(groupSerial) : formDom.lookup(buttonSerial);
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index 080b839..196cc78 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -144,7 +144,17 @@ public:
+     // Values.
+     std::optional<std::string> getRawValue(XFANode *node) const;
+     void setRawValue(XFANode *node, const std::optional<std::string> &value);
++    // The value as displayed, formatted with the field's display picture
++    // clause when it fits, and as edited, with the edit picture clause.
+     std::string getFormattedValue(XFANode *node) const;
++    std::string getEditValue(XFANode *node) const;
++    // The text a viewer shows in the field's widget: the formatted value,
++    // unless it does not fit the field's maximum length or comb.
++    std::optional<std::string> getWidgetValue(XFANode *node) const;
++    // Sets the value from text formatted for display or editing.
++    void setFormattedValue(XFANode *node, const std::string &text);
++    // The locale of node, such as "en_CA", inherited from its ancestors.
++    std::string localeOf(const XFANode *node) const;
+     // Items of a choice list or check button: display texts and values.
+     std::vector<std::string> getItems(XFANode *field, bool saveValues) const;
+     // Changes to the items by scripts. save is the value of an item when it
+@@ -176,7 +186,10 @@ public:
+     void fireEvent(XFANode *node, const std::string &activity, EventContext *ctx = nullptr);
+     void fireEventRecursive(XFANode *node, const std::string &activity);
+     void runCalculations();
+-    bool runValidations(XFANode *node);
++    // Runs the validations of node and its descendants: picture clauses,
++    // validate scripts and, with nullTests, required fields. With report,
++    // the first failure is shown as a message. False when one failed.
++    bool runValidations(XFANode *node, bool nullTests = false, bool report = false);
+     void initializeSubtree(XFANode *node);
+ 
+     // Layout, available to scripts through xfa.layout.
+diff --git a/poppler/XFAPicture.cc b/poppler/XFAPicture.cc
+new file mode 100644
+index 0000000..2d4f27a
+--- /dev/null
++++ b/poppler/XFAPicture.cc
+@@ -0,0 +1,782 @@
++//========================================================================
++//
++// XFAPicture.cc
++//
++// Numeric, date and text picture clauses. Numbers are formatted from
++// their decimal digits, without going through floating point.
++//
++// This file is licensed under the GPLv2 or later
++//
++// Copyright (C) 2026 mminin <mminin2010@gmail.com>
++//
++//========================================================================
++
++#include <config.h>
++
++#include "XFAPicture.h"
++
++#include <algorithm>
++#include <cctype>
++#include <vector>
++
++namespace {
++
++struct Locale
++{
++    bool french = false;
++    std::string radix = ".";
++    std::string grouping = ",";
++    std::string currency = "$";
++};
++
++Locale localeOf(const std::string &name)
++{
++    Locale l;
++    if (name.starts_with("fr")) {
++        l.french = true;
++        l.radix = ",";
++        l.grouping = " ";
++    }
++    return l;
++}
++
++const char *const monthsEn[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
++const char *const monthsFr[] = { "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre" };
++const char *const daysEn[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
++const char *const daysFr[] = { "dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi" };
++
++// One clause of a picture: category{pattern}, with an optional
++// subcategory (num.decimal) and locale (date(fr_CA)).
++struct Clause
++{
++    std::string category;
++    std::string subcategory;
++    std::string locale;
++    std::string pattern;
++};
++
++std::vector<std::string> alternatives(const std::string &picture)
++{
++    std::vector<std::string> res;
++    std::string cur;
++    bool quoted = false;
++    int depth = 0;
++    for (char c : picture) {
++        if (c == '\'') {
++            quoted = !quoted;
++        } else if (!quoted && c == '{') {
++            ++depth;
++        } else if (!quoted && c == '}') {
++            --depth;
++        }
++        if (c == '|' && !quoted && depth == 0) {
++            res.push_back(cur);
++            cur.clear();
++        } else {
++            cur += c;
++        }
++    }
++    res.push_back(cur);
++    return res;
++}
++
++std::optional<Clause> parseClause(const std::string &text, const std::string &defaultLocale)
++{
++    Clause c;
++    c.locale = defaultLocale;
++    const size_t open = text.find('{');
++    if (open == std::string::npos) {
++        // A bare pattern: numeric if it only has numeric symbols.
++        c.pattern = text;
++        c.category = text.find_first_not_of("9zZ8,.sS$% ()") == std::string::npos ? "num" : "text";
++        return c;
++    }
++    const size_t close = text.rfind('}');
++    if (close == std::string::npos || close < open) {
++        return std::nullopt;
++    }
++    c.pattern = text.substr(open + 1, close - open - 1);
++    std::string head = text.substr(0, open);
++    while (!head.empty() && std::isspace(static_cast<unsigned char>(head.front()))) {
++        head.erase(head.begin());
++    }
++    if (const size_t paren = head.find('('); paren != std::string::npos) {
++        const size_t end = head.find(')', paren);
++        c.locale = head.substr(paren + 1, end == std::string::npos ? std::string::npos : end - paren - 1);
++        head.resize(paren);
++    }
++    if (const size_t dot = head.find('.'); dot != std::string::npos) {
++        c.subcategory = head.substr(dot + 1);
++        head.resize(dot);
++    }
++    c.category = head;
++    return c;
++}
++
++// The locale's pattern for clauses such as num.decimal{} or date.short{}.
++std::string defaultPattern(const Clause &c, const Locale &l)
++{
++    if (c.category == "num") {
++        if (c.subcategory == "integer") {
++            return "z,zzz,zzz,zzz,zz9";
++        }
++        if (c.subcategory == "currency") {
++            return l.french ? "z,zzz,zzz,zz9.99' $'" : "$z,zzz,zzz,zz9.99";
++        }
++        if (c.subcategory == "percent") {
++            return "z,zzz,zz9%";
++        }
++        return "z,zzz,zzz,zzz,zz9.zzz";
++    }
++    if (c.category == "date") {
++        if (c.subcategory == "short") {
++            return l.french ? "YY-MM-DD" : "M/D/YY";
++        }
++        if (c.subcategory == "long") {
++            return l.french ? "D MMMM YYYY" : "MMMM D, YYYY";
++        }
++        if (c.subcategory == "full") {
++            return l.french ? "EEEE D MMMM YYYY" : "EEEE, MMMM D, YYYY";
++        }
++        return l.french ? "D MMM YYYY" : "MMM D, YYYY";
++    }
++    return {};
++}
++
++//------------------------------------------------------------------------
++// Numbers
++//------------------------------------------------------------------------
++
++struct NumToken
++{
++    enum Kind
++    {
++        Digit, // 9, z, Z or 8
++        Radix,
++        Grouping,
++        Sign, // s, S, (, ), CR, cr, DB, db
++        Currency,
++        Percent,
++        Literal
++    };
++    Kind kind;
++    std::string text;
++};
++
++std::optional<std::vector<NumToken>> numTokens(const std::string &p)
++{
++    std::vector<NumToken> res;
++    for (size_t i = 0; i < p.size();) {
++        const char c = p[i];
++        if (c == '\'') {
++            const size_t end = p.find('\'', i + 1);
++            res.push_back({ NumToken::Literal, p.substr(i + 1, end == std::string::npos ? std::string::npos : end - i - 1) });
++            i = end == std::string::npos ? p.size() : end + 1;
++        } else if (c == '9' || c == 'z' || c == 'Z' || c == '8') {
++            res.push_back({ NumToken::Digit, std::string(1, c) });
++            ++i;
++        } else if (c == '.' || c == 'v' || c == 'V') {
++            res.push_back({ NumToken::Radix, std::string(1, c) });
++            ++i;
++        } else if (c == ',') {
++            res.push_back({ NumToken::Grouping, "," });
++            ++i;
++        } else if (c == 's' || c == 'S' || c == '(' || c == ')') {
++            res.push_back({ NumToken::Sign, std::string(1, c) });
++            ++i;
++        } else if ((c == 'C' || c == 'c' || c == 'D' || c == 'd') && i + 1 < p.size() && std::tolower(static_cast<unsigned char>(p[i + 1])) == (std::tolower(static_cast<unsigned char>(c)) == 'c' ? 'r' : 'b')) {
++            res.push_back({ NumToken::Sign, p.substr(i, 2) });
++            i += 2;
++        } else if (c == '$') {
++            res.push_back({ NumToken::Currency, "$" });
++            ++i;
++        } else if (c == '%') {
++            res.push_back({ NumToken::Percent, "%" });
++            ++i;
++        } else if (c == 'E' || c == 'e') {
++            return std::nullopt; // exponents are not supported
++        } else {
++            res.push_back({ NumToken::Literal, std::string(1, c) });
++            ++i;
++        }
++    }
++    return res;
++}
++
++// A canonical number split into sign and digits.
++struct Decimal
++{
++    bool negative = false;
++    std::string whole; // without leading zeros, "" for zero
++    std::string fraction; // without trailing zeros
++};
++
++std::optional<Decimal> parseDecimal(const std::string &s)
++{
++    Decimal d;
++    size_t i = 0;
++    while (i < s.size() && s[i] == ' ') {
++        ++i;
++    }
++    if (i < s.size() && (s[i] == '-' || s[i] == '+')) {
++        d.negative = s[i] == '-';
++        ++i;
++    }
++    bool digits = false;
++    while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) {
++        d.whole += s[i++];
++        digits = true;
++    }
++    if (i < s.size() && s[i] == '.') {
++        ++i;
++        while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) {
++            d.fraction += s[i++];
++            digits = true;
++        }
++    }
++    while (i < s.size() && s[i] == ' ') {
++        ++i;
++    }
++    if (!digits || i != s.size()) {
++        return std::nullopt;
++    }
++    d.whole.erase(0, std::min(d.whole.find_first_not_of('0'), d.whole.size()));
++    while (!d.fraction.empty() && d.fraction.back() == '0') {
++        d.fraction.pop_back();
++    }
++    if (d.whole.empty() && d.fraction.empty()) {
++        d.negative = false;
++    }
++    return d;
++}
++
++// Rounds half away from zero to places fraction digits.
++void roundDecimal(Decimal &d, size_t places)
++{
++    if (d.fraction.size() <= places) {
++        return;
++    }
++    const bool up = d.fraction[places] >= '5';
++    d.fraction.resize(places);
++    if (up) {
++        std::string digits = d.whole + d.fraction;
++        int i = static_cast<int>(digits.size()) - 1;
++        for (; i >= 0; --i) {
++            if (digits[i] == '9') {
++                digits[i] = '0';
++            } else {
++                ++digits[i];
++                break;
++            }
++        }
++        if (i < 0) {
++            digits.insert(digits.begin(), '1');
++        }
++        d.whole = digits.substr(0, digits.size() - places);
++        d.fraction = digits.substr(digits.size() - places);
++    }
++    d.whole.erase(0, std::min(d.whole.find_first_not_of('0'), d.whole.size()));
++    while (!d.fraction.empty() && d.fraction.back() == '0') {
++        d.fraction.pop_back();
++    }
++    if (d.whole.empty() && d.fraction.empty()) {
++        d.negative = false;
++    }
++}
++
++std::optional<std::string> formatNumber(const std::string &pattern, const std::string &value, const Locale &l)
++{
++    const auto tokens = numTokens(pattern);
++    auto d = parseDecimal(value);
++    if (!tokens || !d) {
++        return std::nullopt;
++    }
++    const auto radix = std::ranges::find_if(*tokens, [](const NumToken &t) { return t.kind == NumToken::Radix; });
++    const size_t wholePlaces = std::count_if(tokens->begin(), radix, [](const NumToken &t) { return t.kind == NumToken::Digit; });
++    const size_t fractionPlaces = std::count_if(radix, tokens->end(), [](const NumToken &t) { return t.kind == NumToken::Digit; });
++    roundDecimal(*d, fractionPlaces);
++    if (d->whole.size() > wholePlaces) {
++        return std::nullopt;
++    }
++    const bool hasSign = std::ranges::any_of(*tokens, [](const NumToken &t) { return t.kind == NumToken::Sign; });
++
++    std::string out = d->negative && !hasSign ? "-" : "";
++    size_t position = wholePlaces; // of the next whole digit, counted from the radix
++    size_t fractionIndex = 0;
++    bool inFraction = false;
++    char shown = 0; // what the digits so far showed: 0 nothing, ' ' spaces, '1' digits
++    for (const NumToken &t : *tokens) {
++        switch (t.kind) {
++        case NumToken::Digit:
++            if (!inFraction) {
++                --position;
++                if (position < d->whole.size()) {
++                    out += d->whole[d->whole.size() - 1 - position];
++                    shown = '1';
++                } else if (t.text == "9") {
++                    out += '0';
++                    shown = '1';
++                } else if (t.text == "Z") {
++                    out += ' ';
++                    shown = shown ? shown : ' ';
++                }
++            } else {
++                // Trailing zeros show only for 9.
++                const bool more = fractionIndex < d->fraction.size();
++                if (more || t.text == "9") {
++                    out += more ? d->fraction[fractionIndex] : '0';
++                } else if (t.text == "Z") {
++                    out += ' ';
++                }
++                ++fractionIndex;
++            }
++            break;
++        case NumToken::Radix:
++            inFraction = true;
++            if (t.text == ".") {
++                // Shown when a fraction digit follows.
++                const bool shows = !d->fraction.empty() || std::any_of(radix, tokens->end(), [](const NumToken &k) { return k.kind == NumToken::Digit && k.text == "9"; });
++                if (shows) {
++                    out += l.radix;
++                }
++            }
++            break;
++        case NumToken::Grouping:
++            if (shown == '1') {
++                out += l.grouping;
++            } else if (shown == ' ') {
++                out += ' ';
++            }
++            break;
++        case NumToken::Sign:
++            if (t.text == "s") {
++                out += d->negative ? "-" : "";
++            } else if (t.text == "S") {
++                out += d->negative ? "-" : " ";
++            } else if (t.text == "(" || t.text == ")") {
++                out += d->negative ? t.text : " ";
++            } else {
++                out += d->negative ? t.text : std::string(t.text.size(), ' ');
++            }
++            break;
++        case NumToken::Currency:
++            out += l.currency;
++            break;
++        case NumToken::Percent:
++            out += '%';
++            break;
++        case NumToken::Literal:
++            out += t.text;
++            break;
++        }
++    }
++    return out;
++}
++
++std::optional<std::string> parseNumber(const std::string &pattern, const std::string &text, const Locale &l)
++{
++    const auto tokens = numTokens(pattern);
++    if (!tokens) {
++        return std::nullopt;
++    }
++    const auto radix = std::ranges::find_if(*tokens, [](const NumToken &t) { return t.kind == NumToken::Radix; });
++    const size_t wholePlaces = std::count_if(tokens->begin(), radix, [](const NumToken &t) { return t.kind == NumToken::Digit; });
++    const size_t fractionPlaces = std::count_if(radix, tokens->end(), [](const NumToken &t) { return t.kind == NumToken::Digit; });
++    // Drop what the picture adds around the digits, then read a number.
++    std::string s = text;
++    for (const NumToken &t : *tokens) {
++        if (t.kind == NumToken::Literal && !t.text.empty() && t.text.find_first_of("0123456789") == std::string::npos) {
++            for (size_t at; (at = s.find(t.text)) != std::string::npos;) {
++                s.erase(at, t.text.size());
++            }
++        }
++    }
++    bool negative = false;
++    std::string digits;
++    bool seenRadix = false;
++    for (size_t i = 0; i < s.size(); ++i) {
++        const char c = s[i];
++        if (std::isdigit(static_cast<unsigned char>(c))) {
++            digits += c;
++        } else if (s.compare(i, l.radix.size(), l.radix) == 0 || (c == '.' && l.radix != ".")) {
++            if (seenRadix) {
++                return std::nullopt;
++            }
++            seenRadix = true;
++            digits += '.';
++            i += l.radix.size() - 1;
++        } else if (c == '-' || c == '(' || c == ')') {
++            negative = true;
++        } else if ((c == 'C' || c == 'c' || c == 'D' || c == 'd') && i + 1 < s.size() && std::isalpha(static_cast<unsigned char>(s[i + 1]))) {
++            negative = true;
++            ++i;
++        } else if (c == ' ' || c == '+' || c == '$' || c == '%' || s.compare(i, l.grouping.size(), l.grouping) == 0 || (c == ',' && l.radix != ",")) {
++            continue;
++        } else if (static_cast<unsigned char>(c) >= 0x80) {
++            continue; // no-break spaces and other separators
++        } else {
++            return std::nullopt;
++        }
++    }
++    auto d = parseDecimal(digits);
++    if (!d || d->whole.size() > wholePlaces || d->fraction.size() > fractionPlaces) {
++        return std::nullopt;
++    }
++    std::string res = (negative && (!d->whole.empty() || !d->fraction.empty()) ? "-" : "") + (d->whole.empty() ? std::string("0") : d->whole);
++    if (!d->fraction.empty()) {
++        res += "." + d->fraction;
++    }
++    return res;
++}
++
++//------------------------------------------------------------------------
++// Text
++//------------------------------------------------------------------------
++
++// Literal runs and placeholders: 9 digit, A letter, X any, O or 0 letter
++// or digit.
++bool placeholderAccepts(char symbol, unsigned char c)
++{
++    switch (symbol) {
++    case '9':
++        return std::isdigit(c);
++    case 'A':
++        return std::isalpha(c) || c >= 0x80;
++    case 'O':
++    case '0':
++        return std::isalnum(c) || c >= 0x80;
++    default:
++        return true;
++    }
++}
++
++struct TextElement
++{
++    char symbol; // 0 for literals
++    std::string literal;
++};
++
++std::vector<TextElement> textElements(const std::string &p)
++{
++    std::vector<TextElement> res;
++    for (size_t i = 0; i < p.size();) {
++        const char c = p[i];
++        if (c == '\'') {
++            const size_t end = p.find('\'', i + 1);
++            res.push_back({ 0, p.substr(i + 1, end == std::string::npos ? std::string::npos : end - i - 1) });
++            i = end == std::string::npos ? p.size() : end + 1;
++        } else if (c == '9' || c == 'A' || c == 'X' || c == 'O' || c == '0') {
++            res.push_back({ c, {} });
++            ++i;
++        } else if (c == 't') {
++            res.push_back({ 0, "\t" });
++            ++i;
++        } else {
++            res.push_back({ 0, std::string(1, c) });
++            ++i;
++        }
++    }
++    return res;
++}
++
++// UTF-8 characters, so that placeholders take whole characters.
++std::vector<std::string> characters(const std::string &s)
++{
++    std::vector<std::string> res;
++    for (size_t i = 0; i < s.size();) {
++        size_t n = 1;
++        const unsigned char c = s[i];
++        if (c >= 0xF0) {
++            n = 4;
++        } else if (c >= 0xE0) {
++            n = 3;
++        } else if (c >= 0xC0) {
++            n = 2;
++        }
++        res.push_back(s.substr(i, n));
++        i += n;
++    }
++    return res;
++}
++
++std::optional<std::string> formatText(const std::string &pattern, const std::string &value)
++{
++    const std::vector<std::string> chars = characters(value);
++    std::string out;
++    size_t k = 0;
++    for (const TextElement &e : textElements(pattern)) {
++        if (!e.symbol) {
++            out += e.literal;
++            continue;
++        }
++        if (k >= chars.size() || !placeholderAccepts(e.symbol, chars[k][0])) {
++            return std::nullopt;
++        }
++        out += chars[k++];
++    }
++    if (k != chars.size()) {
++        return std::nullopt;
++    }
++    return out;
++}
++
++std::optional<std::string> parseText(const std::string &pattern, const std::string &text)
++{
++    const std::vector<std::string> chars = characters(text);
++    std::string out;
++    size_t k = 0;
++    for (const TextElement &e : textElements(pattern)) {
++        if (!e.symbol) {
++            for (const std::string &lc : characters(e.literal)) {
++                if (k >= chars.size() || chars[k] != lc) {
++                    return std::nullopt;
++                }
++                ++k;
++            }
++            continue;
++        }
++        if (k >= chars.size() || !placeholderAccepts(e.symbol, chars[k][0])) {
++            return std::nullopt;
++        }
++        out += chars[k++];
++    }
++    if (k != chars.size()) {
++        return std::nullopt;
++    }
++    return out;
++}
++
++//------------------------------------------------------------------------
++// Dates
++//------------------------------------------------------------------------
++
++struct Date
++{
++    int y = 0, m = 0, d = 0;
++};
++
++bool validDate(const Date &d)
++{
++    static const int days[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
++    if (d.m < 1 || d.m > 12 || d.d < 1 || d.y < 1) {
++        return false;
++    }
++    const bool leap = (d.y % 4 == 0 && d.y % 100 != 0) || d.y % 400 == 0;
++    return d.d <= days[d.m - 1] + (d.m == 2 && leap ? 1 : 0);
++}
++
++int weekday(const Date &d)
++{
++    // Zeller's congruence, 0 for Sunday.
++    int y = d.y, m = d.m;
++    if (m < 3) {
++        m += 12;
++        --y;
++    }
++    const int h = (d.d + 13 * (m + 1) / 5 + y + y / 4 - y / 100 + y / 400) % 7;
++    return (h + 6) % 7;
++}
++
++int dayOfYear(const Date &d)
++{
++    int n = d.d;
++    for (int m = 1; m < d.m; ++m) {
++        n += m == 2 ? 28 + (validDate({ d.y, 2, 29 }) ? 1 : 0) : (m == 4 || m == 6 || m == 9 || m == 11) ? 30 : 31;
++    }
++    return n;
++}
++
++// Runs of the same date symbol, quoted literals and other characters.
++std::vector<std::string> dateTokens(const std::string &p)
++{
++    std::vector<std::string> res;
++    for (size_t i = 0; i < p.size();) {
++        const char c = p[i];
++        if (c == '\'') {
++            const size_t end = p.find('\'', i + 1);
++            res.push_back("'" + p.substr(i + 1, end == std::string::npos ? std::string::npos : end - i - 1));
++            i = end == std::string::npos ? p.size() : end + 1;
++        } else if (c == 'Y' || c == 'M' || c == 'D' || c == 'E' || c == 'J') {
++            size_t k = i;
++            while (k < p.size() && p[k] == c) {
++                ++k;
++            }
++            res.push_back(p.substr(i, k - i));
++            i = k;
++        } else {
++            res.push_back("'" + std::string(1, c));
++            ++i;
++        }
++    }
++    return res;
++}
++
++std::string padded(int v, size_t width)
++{
++    std::string s = std::to_string(v);
++    return std::string(width > s.size() ? width - s.size() : 0, '0') + s;
++}
++
++std::optional<std::string> formatDate(const std::string &pattern, const std::string &value, const Locale &l)
++{
++    // The canonical form, YYYY-MM-DD, or YYYYMMDD.
++    Date d;
++    const std::string digits = value.size() == 10 && value[4] == '-' && value[7] == '-' ? value.substr(0, 4) + value.substr(5, 2) + value.substr(8, 2) : value;
++    if (digits.size() != 8 || !std::ranges::all_of(digits, [](char c) { return std::isdigit(static_cast<unsigned char>(c)); })) {
++        return std::nullopt;
++    }
++    d.y = std::stoi(digits.substr(0, 4));
++    d.m = std::stoi(digits.substr(4, 2));
++    d.d = std::stoi(digits.substr(6, 2));
++    if (!validDate(d)) {
++        return std::nullopt;
++    }
++    const char *const *months = l.french ? monthsFr : monthsEn;
++    const char *const *days = l.french ? daysFr : daysEn;
++    std::string out;
++    for (const std::string &t : dateTokens(pattern)) {
++        if (t[0] == '\'') {
++            out += t.substr(1);
++        } else if (t == "YYYY") {
++            out += padded(d.y, 4);
++        } else if (t == "YY") {
++            out += padded(d.y % 100, 2);
++        } else if (t == "MMMM") {
++            out += months[d.m - 1];
++        } else if (t == "MMM") {
++            const std::vector<std::string> name = characters(months[d.m - 1]);
++            for (size_t i = 0; i < std::min<size_t>(3, name.size()); ++i) {
++                out += name[i];
++            }
++        } else if (t == "MM") {
++            out += padded(d.m, 2);
++        } else if (t == "M") {
++            out += std::to_string(d.m);
++        } else if (t == "DD") {
++            out += padded(d.d, 2);
++        } else if (t == "D") {
++            out += std::to_string(d.d);
++        } else if (t == "EEEE") {
++            out += days[weekday(d)];
++        } else if (t == "EEE") {
++            out += std::string(days[weekday(d)]).substr(0, 3);
++        } else if (t == "JJJ") {
++            out += padded(dayOfYear(d), 3);
++        } else if (t == "J") {
++            out += std::to_string(dayOfYear(d));
++        } else {
++            return std::nullopt;
++        }
++    }
++    return out;
++}
++
++std::optional<std::string> parseDate(const std::string &pattern, const std::string &text, const Locale &l)
++{
++    Date d { 0, 0, 0 };
++    size_t pos = 0;
++    auto number = [&](size_t min, size_t max) -> std::optional<int> {
++        size_t k = pos;
++        while (k < text.size() && k - pos < max && std::isdigit(static_cast<unsigned char>(text[k]))) {
++            ++k;
++        }
++        if (k - pos < min) {
++            return std::nullopt;
++        }
++        const int v = std::stoi(text.substr(pos, k - pos));
++        pos = k;
++        return v;
++    };
++    auto name = [&](const char *const *names, int count, size_t len) -> std::optional<int> {
++        for (int i = 0; i < count; ++i) {
++            std::string n;
++            const std::vector<std::string> chars = characters(names[i]);
++            for (size_t k = 0; k < chars.size() && (!len || k < len); ++k) {
++                n += chars[k];
++            }
++            if (text.size() - pos >= n.size() && std::equal(n.begin(), n.end(), text.begin() + pos, [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); })) {
++                pos += n.size();
++                return i;
++            }
++        }
++        return std::nullopt;
++    };
++    const char *const *months = l.french ? monthsFr : monthsEn;
++    const char *const *days = l.french ? daysFr : daysEn;
++    for (const std::string &t : dateTokens(pattern)) {
++        std::optional<int> v;
++        if (t[0] == '\'') {
++            if (text.compare(pos, t.size() - 1, t, 1) != 0) {
++                return std::nullopt;
++            }
++            pos += t.size() - 1;
++            continue;
++        }
++        if (t == "YYYY") {
++            v = number(4, 4);
++            d.y = v.value_or(0);
++        } else if (t == "YY") {
++            v = number(2, 2);
++            d.y = v ? (*v < 50 ? 2000 : 1900) + *v : 0;
++        } else if (t == "MMMM" || t == "MMM") {
++            v = name(months, 12, t == "MMM" ? 3 : 0);
++            d.m = v ? *v + 1 : 0;
++        } else if (t == "MM" || t == "M") {
++            v = number(t.size(), 2);
++            d.m = v.value_or(0);
++        } else if (t == "DD" || t == "D") {
++            v = number(t.size(), 2);
++            d.d = v.value_or(0);
++        } else if (t == "EEEE" || t == "EEE") {
++            v = name(days, 7, t == "EEE" ? 3 : 0);
++        } else {
++            return std::nullopt;
++        }
++        if (!v) {
++            return std::nullopt;
++        }
++    }
++    if (pos != text.size() || !validDate(d)) {
++        return std::nullopt;
++    }
++    return padded(d.y, 4) + "-" + padded(d.m, 2) + "-" + padded(d.d, 2);
++}
++
++std::optional<std::string> apply(const std::string &picture, const std::string &input, const std::string &localeName, bool format)
++{
++    for (const std::string &alt : alternatives(picture)) {
++        const std::optional<Clause> c = parseClause(alt, localeName);
++        if (!c) {
++            continue;
++        }
++        const Locale l = localeOf(c->locale);
++        const std::string pattern = c->pattern.empty() ? defaultPattern(*c, l) : c->pattern;
++        if (pattern.empty()) {
++            return input;
++        }
++        std::optional<std::string> res;
++        if (c->category == "num") {
++            res = format ? formatNumber(pattern, input, l) : parseNumber(pattern, input, l);
++        } else if (c->category == "date") {
++            res = format ? formatDate(pattern, input, l) : parseDate(pattern, input, l);
++        } else if (c->category == "text") {
++            res = format ? formatText(pattern, input) : parseText(pattern, input);
++        }
++        if (res) {
++            return res;
++        }
++    }
++    return std::nullopt;
++}
++
++} // namespace
++
++std::optional<std::string> XFAPictureFormat(const std::string &picture, const std::string &value, const std::string &locale)
++{
++    return apply(picture, value, locale, true);
++}
++
++std::optional<std::string> XFAPictureParse(const std::string &picture, const std::string &text, const std::string &locale)
++{
++    return apply(picture, text, locale, false);
++}
+diff --git a/poppler/XFAPicture.h b/poppler/XFAPicture.h
+new file mode 100644
+index 0000000..d8f6ba5
+--- /dev/null
++++ b/poppler/XFAPicture.h
+@@ -0,0 +1,32 @@
++//========================================================================
++//
++// XFAPicture.h
++//
++// Picture clauses: the patterns that format the values of XFA fields for
++// display and editing, and parse what users type, such as
++// "num{$z,zzz,zz9.99}", "date{YYYY-MM-DD}" or "text{999 999 999}".
++//
++// This file is licensed under the GPLv2 or later
++//
++// Copyright (C) 2026 mminin <mminin2010@gmail.com>
++//
++//========================================================================
++
++#ifndef XFAPICTURE_H
++#define XFAPICTURE_H
++
++#include <optional>
++#include <string>
++
++// Values are canonical: numbers as "-1234.5", dates as "YYYY-MM-DD", text
++// as it is. locale is a name such as "en_CA" or "fr_CA". A picture may
++// hold alternatives separated by "|": the first that fits is used.
++
++// The value formatted with picture, or nothing when it does not fit.
++std::optional<std::string> XFAPictureFormat(const std::string &picture, const std::string &value, const std::string &locale);
++
++// The canonical value of text formatted with picture, or nothing when the
++// text does not match.
++std::optional<std::string> XFAPictureParse(const std::string &picture, const std::string &text, const std::string &locale);
++
++#endif
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index cfaab80..5d9ccab 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -208,7 +208,8 @@ var handler = {
+         case "nodes": return new NodeList(function () { return N.children(id); }, id);
+         case "rawValue": return N.rawValue(id);
+         case "isNull": return N.rawValue(id) === null;
+-        case "formattedValue": case "editValue": return N.formattedValue(id);
++        case "formattedValue": return N.formattedValue(id);
++        case "editValue": return N.editValue(id);
+         case "index": return N.nameIndex(id);
+         case "instanceIndex": return N.instanceIndex(id);
+         case "instanceManager": return im(N.imOf(id));
+@@ -268,7 +269,8 @@ var handler = {
+         var cls = N.cls(id);
+         var str = value === null || value === undefined ? null : String(value);
+         switch (prop) {
+-        case "rawValue": case "formattedValue": case "editValue": N.setRawValue(id, str); return true;
++        case "rawValue": N.setRawValue(id, str); return true;
++        case "formattedValue": case "editValue": N.setFormattedValue(id, str === null ? "" : str); return true;
+         case "selectedIndex": {
+             var s = N.items(id, true);
+             N.setRawValue(id, value >= 0 && value < s.length ? s[value] : null);
+@@ -1328,6 +1330,21 @@ NATIVE(formattedValue)
+     return n ? strValue(ctx, formOf(ctx)->getFormattedValue(n)) : JS_NULL;
+ }
+ 
++NATIVE(editValue)
++{
++    XFANode *n = nodeArg(ctx, ARG(0));
++    return n ? strValue(ctx, formOf(ctx)->getEditValue(n)) : JS_NULL;
++}
++
++NATIVE(setFormattedValue)
++{
++    XFANode *n = nodeArg(ctx, ARG(0));
++    if (n && n->getDom() == formOf(ctx)->getFormDom()) {
++        formOf(ctx)->setFormattedValue(n, strArg(ctx, ARG(1)));
++    }
++    return JS_UNDEFINED;
++}
++
+ NATIVE(items)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
+@@ -1482,7 +1499,7 @@ NATIVE(dataRoot)
+ NATIVE(execValidate)
+ {
+     XFANode *n = nodeArg(ctx, ARG(0));
+-    return JS_NewBool(ctx, n ? formOf(ctx)->runValidations(n) : true);
++    return JS_NewBool(ctx, n ? formOf(ctx)->runValidations(n, true, false) : true);
+ }
+ 
+ NATIVE(fireEvent)
+@@ -1530,14 +1547,66 @@ struct NativeEntry
+ };
+ 
+ #    define ENTRY(name, len) { #name, native_##name, len }
+-const NativeEntry natives[] = { ENTRY(alive, 1),        ENTRY(cls, 1),         ENTRY(name, 1),           ENTRY(attr, 2),      ENTRY(setAttr, 3),    ENTRY(parent, 1),    ENTRY(children, 1),      ENTRY(childrenOfClass, 2),
+-                                ENTRY(addChild, 2),     ENTRY(child, 2),       ENTRY(siblingsNamed, 1),  ENTRY(text, 1),      ENTRY(setText, 2),    ENTRY(resolve, 3),   ENTRY(scopeGet, 2),      ENTRY(imFind, 3),
+-                                ENTRY(imOf, 1),         ENTRY(imCount, 2),     ENTRY(imAdd, 2),          ENTRY(imRemove, 3),  ENTRY(imSet, 3),      ENTRY(imOccur, 2),   ENTRY(instanceIndex, 1), ENTRY(nameIndex, 1),
+-                                ENTRY(rawValue, 1),     ENTRY(setRawValue, 2), ENTRY(formattedValue, 1), ENTRY(items, 2),     ENTRY(pageOf, 1),     ENTRY(pageCount, 0), ENTRY(pageContent, 3),   ENTRY(relayout, 0),
+-                                ENTRY(message, 2),      ENTRY(launchURL, 1),   ENTRY(print, 2),          ENTRY(language, 0),  ENTRY(resetData, 1),  ENTRY(saveXML, 1),   ENTRY(loadXML, 3),       ENTRY(removeNode, 1),
+-                                ENTRY(appendNode, 2),   ENTRY(createNode, 2),  ENTRY(execValidate, 1),   ENTRY(fireEvent, 2), ENTRY(runCalcs, 0),   ENTRY(log, 1),       ENTRY(som, 1),           ENTRY(formModel, 0),
+-                                ENTRY(templateRoot, 0), ENTRY(variable, 3),    ENTRY(clearItems, 1),     ENTRY(addItem, 3),   ENTRY(deleteItem, 2), ENTRY(imMove, 4),    ENTRY(loadDataXML, 4),   ENTRY(remerge, 0),
+-                                ENTRY(datasets, 0),     ENTRY(dataRoot, 0) };
++const NativeEntry natives[] = { ENTRY(alive, 1),
++                                ENTRY(cls, 1),
++                                ENTRY(name, 1),
++                                ENTRY(attr, 2),
++                                ENTRY(setAttr, 3),
++                                ENTRY(parent, 1),
++                                ENTRY(children, 1),
++                                ENTRY(childrenOfClass, 2),
++                                ENTRY(addChild, 2),
++                                ENTRY(child, 2),
++                                ENTRY(siblingsNamed, 1),
++                                ENTRY(text, 1),
++                                ENTRY(setText, 2),
++                                ENTRY(resolve, 3),
++                                ENTRY(scopeGet, 2),
++                                ENTRY(imFind, 3),
++                                ENTRY(imOf, 1),
++                                ENTRY(imCount, 2),
++                                ENTRY(imAdd, 2),
++                                ENTRY(imRemove, 3),
++                                ENTRY(imSet, 3),
++                                ENTRY(imOccur, 2),
++                                ENTRY(instanceIndex, 1),
++                                ENTRY(nameIndex, 1),
++                                ENTRY(rawValue, 1),
++                                ENTRY(setRawValue, 2),
++                                ENTRY(formattedValue, 1),
++                                ENTRY(items, 2),
++                                ENTRY(pageOf, 1),
++                                ENTRY(pageCount, 0),
++                                ENTRY(pageContent, 3),
++                                ENTRY(relayout, 0),
++                                ENTRY(message, 2),
++                                ENTRY(launchURL, 1),
++                                ENTRY(print, 2),
++                                ENTRY(language, 0),
++                                ENTRY(resetData, 1),
++                                ENTRY(saveXML, 1),
++                                ENTRY(loadXML, 3),
++                                ENTRY(removeNode, 1),
++                                ENTRY(appendNode, 2),
++                                ENTRY(createNode, 2),
++                                ENTRY(execValidate, 1),
++                                ENTRY(fireEvent, 2),
++                                ENTRY(runCalcs, 0),
++                                ENTRY(log, 1),
++                                ENTRY(som, 1),
++                                ENTRY(formModel, 0),
++                                ENTRY(templateRoot, 0),
++                                ENTRY(variable, 3),
++                                ENTRY(clearItems, 1),
++                                ENTRY(addItem, 3),
++                                ENTRY(deleteItem, 2),
++                                ENTRY(imMove, 4),
++                                ENTRY(loadDataXML, 4),
++                                ENTRY(remerge, 0),
++                                ENTRY(datasets, 0),
++                                ENTRY(dataRoot, 0),
++                                ENTRY(editValue, 1),
++                                ENTRY(setFormattedValue, 2) };
+ 
+ int interruptHandler(JSContext *, void *opaque)
+ {
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index 08beb2e..2607aa3 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -701,8 +701,9 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub
+         if (text && text->getAttr("maxChars")) {
+             dict += " /MaxLen " + text->getAttr("maxChars", "0");
+         }
+-        if (raw && !blankValues) {
+-            dict += " /V " + pdfTextString(*raw);
++        const std::optional<std::string> shown = form->getWidgetValue(field);
++        if (shown && !blankValues) {
++            dict += " /V " + pdfTextString(*shown);
+         }
+     }
+     dict += " >>";
+-- 
+2.43.0
+

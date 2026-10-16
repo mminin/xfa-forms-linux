@@ -42,7 +42,8 @@ Known gaps, most of them found with the [corpus](corpus/README.md):
   financial functions or picture-clause functions such as `Format()`.
 - Data binding is simplified: values are matched to data by name, `dataRef` bindings
   are ignored, and the form's values are kept in the form, not in the data DOM.
-- Picture clauses (display and validation patterns) are ignored.
+- Picture clauses support numbers, dates and text, not times, and symbols are English
+  or French.
 - Fonts map onto the 14 standard PDF fonts, with horizontal scaling for narrow
   and black faces. Nothing is embedded.
 - Images are drawn from JPEG, PNG, GIF, BMP and TIFF data; SVG and external
@@ -146,6 +147,7 @@ Poppler (`patches/poppler/`, about 8,800 added lines):
 | 0015 | FormCalc, translated to JavaScript |
 | 0016 | Validation scripts of immigration forms: validation messages, `oneOfChild` |
 | 0017 | Barcodes, drawn with Zint |
+| 0018 | Picture clauses for display, editing and validation; validation results |
 
 Evince (`patches/evince/`, about 600 added lines):
 
