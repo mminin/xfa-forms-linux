@@ -164,8 +164,11 @@ worth considering.
 ## Credits and AI assistance
 
 Most of this code was written with AI coding assistants: Anthropic's Claude (commits
-carrying a `Co-Authored-By: Claude` line) and OpenAI's ChatGPT/Codex (Poppler 0008–0009
-and Evince 0007–0008). The human maintainer, mminin <mminin2010@gmail.com>, directed
+carrying a `Co-Authored-By: Claude` line) and OpenAI Codex using **GPT-6.1 Sol**
+(`gpt-6.1-sol`, reasoning effort `high`; Poppler 0008–0009 and Evince 0007–0008).
+The model and effort were verified against the local Codex session records.
+The [PR plan](PR_PLAN.md) records the contribution breakdown and attribution to
+carry into upstream submissions. The human maintainer, mminin <mminin2010@gmail.com>, directed
 the work and is responsible for it. Mozilla's
 [pdf.js](https://github.com/mozilla/pdf.js) XFA implementation was consulted as a
 reference while writing the engine.
