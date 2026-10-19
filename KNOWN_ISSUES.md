@@ -38,11 +38,6 @@ Carried over from the prior session and still not done:
 These are design limitations, not regressions. Each is a real gap a strict XFA form
 could hit; listed so nobody assumes full coverage.
 
-### 6. FormCalc is partial — P2
-Translated to JavaScript, but without SOM predicates (`a.[b > 1]`), the financial
-functions, or picture-clause functions such as `Format()`/`Parse()`. **Why:** these
-were not needed by the corpus forms. A form using them will throw at runtime.
-
 ### 7. Data binding is simplified — P2
 Values are matched to data by name. `dataRef`/`bind` expressions are ignored, and the
 form's values are held in the form tree, not written through to the data DOM the way
@@ -90,5 +85,9 @@ lay it out the same way. Left as-is pending a counter-example.
   (en_CA forms showed `date.short{}` as US `M/D/YY`), time and date-time pictures
   are supported, and `null{}`/`zero{}` no longer swallow every value — 12 corpus
   currency fields showed raw numbers (poppler 0030).
+- FormCalc gained its financial, time, `Format()`/`Parse()`, `WordNum()`, unit,
+  `Eval()` and `Ref()` functions, checked against the examples of Adobe's FormCalc
+  reference (`tools/qa/test_formcalc.py`) (poppler 0031), and SOM predicates
+  (poppler 0032).
 
 See the commit messages of those patches for detail.

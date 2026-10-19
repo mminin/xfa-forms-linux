@@ -1,0 +1,602 @@
+From 1105b3ec6e125d4d1165a57f8e94d4d38bacd55e Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 14:45:01 -0700
+Subject: [PATCH] XFA: Complete FormCalc's built-in functions
+
+Add the FormCalc functions that were missing, following Adobe's FormCalc
+reference: the financial functions Apr, CTerm, FV, IPmt, NPV, Pmt, PPmt,
+PV, Rate and Term; the time functions Time2Num, Num2Time, Num2GMTime,
+IsoTime2Num, TimeFmt and LocalTimeFmt; Format and Parse; WordNum,
+UnitType, UnitValue, Eval, Null and Ref. Get, Post and Put throw, since
+forms may not reach the network.
+
+Date and time functions now use picture clauses and the form's locales,
+so Date2Num and Num2Date take a locale and understand every date symbol,
+DateFmt and LocalDateFmt give the locale's patterns, and Time() counts
+milliseconds from midnight GMT as FormCalc specifies. Date2Num's default
+format is now "MMM D, YYYY", as specified. Encode and Decode handle the
+html and xml types.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c |  13 +-
+ poppler/XFAFormCalc.cc |  15 +-
+ poppler/XFAScript.cc   | 442 ++++++++++++++++++++++++++++++++---------
+ 3 files changed, 371 insertions(+), 99 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 2a316b5..40804a3 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -662,10 +662,12 @@ static const char *formcalc_xdp =
+         "<field name=\"empty\" w=\"1in\" h=\"0.3in\"><ui><textEdit/></ui></field>" FORMCALC_FIELD("sum", "Concat(\"sum=\", Sum(Row[*].v))") FORMCALC_FIELD("loop",
+                                                                                                                                                            "var x = 0 ; comment\n for i = 1 upto 4 do x = x + i endfor\n"
+                                                                                                                                                            " if (x &gt; 5 and not (x == 3)) then Concat(\"loop=\", x) else \"small\" endif")
+-                FORMCALC_FIELD("date", "Concat(\"date=\", Num2Date(Date2Num(\"2024-03-01\", \"YYYY-MM-DD\") - 1, \"YYYY-MM-DD\"))")
+-                        FORMCALC_FIELD("func", "func twice(n) do n * 2 endfunc // comment\n Concat(\"func=\", twice(21), \"|\", empty + 1, \"|\", Upper(Left(\"hello\", 2)))") "</subform>"
+-                                                                                                                                                                               "</template>"
+-                                                                                                                                                                               "</xdp:xdp>";
++                FORMCALC_FIELD("date", "Concat(\"date=\", Num2Date(Date2Num(\"2024-03-01\", \"YYYY-MM-DD\") - 1, \"YYYY-MM-DD\"))") FORMCALC_FIELD(
++                        "func", "func twice(n) do n * 2 endfunc // comment\n Concat(\"func=\", twice(21), \"|\", empty + 1, \"|\", Upper(Left(\"hello\", 2)))")
++                        FORMCALC_FIELD("fin", "Concat(\"fin=\", Round(Pmt(150000, 0.0475 / 12, 300), 2), \"|\", Round(NPV(0.10, 500, 1500, 4000, 10000), 2))") FORMCALC_FIELD("words", "Concat(\"words=\", WordNum(43, 2))") FORMCALC_FIELD(
++                                "misc", "Concat(\"misc=\", Format(\"MMM D, YYYY\", \"20020901\"), \"|\", Eval(\"10*3+5*4\"), \"|\", UnitValue(\"2in\", \"cm\"), \"|\", Time2Num(\"13:13:13 GMT\", \"HH:MM:SS Z\"))") "</subform>"
++                                                                                                                                                                                                                     "</template>"
++                                                                                                                                                                                                                     "</xdp:xdp>";
+ 
+ static void test_formcalc(void)
+ {
+@@ -683,6 +685,9 @@ static void test_formcalc(void)
+         g_assert_nonnull(strstr(text, "loop=10"));
+         g_assert_nonnull(strstr(text, "date=2024-02-29"));
+         g_assert_nonnull(strstr(text, "func=42|1|HE"));
++        g_assert_nonnull(strstr(text, "fin=855.18|11529.61"));
++        g_assert_nonnull(strstr(text, "words=Forty-three Dollars And Zero Cents"));
++        g_assert_nonnull(strstr(text, "misc=Sep 1, 2002|50|5.08|47593001"));
+     }
+     g_free(text);
+     g_object_unref(rendered);
+diff --git a/poppler/XFAFormCalc.cc b/poppler/XFAFormCalc.cc
+index 61be917..e64cba1 100644
+--- a/poppler/XFAFormCalc.cc
++++ b/poppler/XFAFormCalc.cc
+@@ -239,9 +239,11 @@ const std::set<std::string> &keywords()
+ // The built-in functions of the runtime.
+ const std::set<std::string> &builtins()
+ {
+-    static const std::set<std::string> b = { "abs",         "avg",      "ceil",    "count",        "floor", "max",    "min",      "mod",    "round", "sum",    "concat", "left",   "right",
+-                                             "len",         "lower",    "upper",   "ltrim",        "rtrim", "substr", "replace",  "space",  "str",   "stuff",  "at",     "date",   "date2num",
+-                                             "isodate2num", "num2date", "datefmt", "localdatefmt", "time",  "choose", "hasvalue", "exists", "oneof", "within", "uuid",   "encode", "decode" };
++    static const std::set<std::string> b = { "abs",         "avg",      "ceil",       "count",        "floor",   "max",          "min",      "mod",       "round",   "sum",    "concat", "left",   "right",
++                                             "len",         "lower",    "upper",      "ltrim",        "rtrim",   "substr",       "replace",  "space",     "str",     "stuff",  "at",     "date",   "date2num",
++                                             "isodate2num", "num2date", "datefmt",    "localdatefmt", "time",    "choose",       "hasvalue", "exists",    "oneof",   "within", "uuid",   "encode", "decode",
++                                             "time2num",    "num2time", "num2gmtime", "isotime2num",  "timefmt", "localtimefmt", "format",   "parse",     "wordnum", "apr",    "cterm",  "fv",     "ipmt",
++                                             "npv",         "pmt",      "ppmt",       "pv",           "rate",    "term",         "unittype", "unitvalue", "eval",    "ref",    "get",    "post",   "put" };
+     return b;
+ }
+ 
+@@ -566,6 +568,10 @@ private:
+             return { Expr::Value, value(e) };
+         }
+         if (acceptKeyword("null")) {
++            // Null() is the function giving null.
++            if (acceptPunct("(")) {
++                expectPunct(")");
++            }
+             return { Expr::Value, "null" };
+         }
+         if (t.kind == Token::Name && !keywords().contains(lower(t.text))) {
+@@ -588,7 +594,8 @@ private:
+                 return { Expr::Value, "fn_" + name + ".apply(null, __fc.values([" + args + "]))" };
+             }
+             if (builtins().contains(name)) {
+-                return { Expr::Value, "__fc.fn." + name + "(" + args + ")" };
++                // Called on the runtime, which knows the object running the script.
++                return { Expr::Value, "__fc.fn." + name + ".call(__fc" + (args.empty() ? "" : ", " + args) + ")" };
+             }
+             fail("unknown function " + first.text);
+             return {};
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index c965b07..9aa7af9 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -16,6 +16,7 @@
+ #include <config.h>
+ 
+ #include "XFAScript.h"
++#include "XFAFormCalc.h"
+ 
+ #if HAVE_XFA_SCRIPTING
+ 
+@@ -516,8 +517,6 @@ var util = {
+ // the script.
+ var FC_MODELS = { form: 1, template: 1, datasets: 1, data: 1 };
+ var FC_NUMBER = /^\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?\s*$/;
+-var FC_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+-var FC_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+ 
+ function fcSegments(som) {
+     var parts = [], depth = 0, cur = "";
+@@ -642,94 +641,100 @@ function fcDateOf(n) {
+     var t = new Date(Date.UTC(1900, 0, 1) + (n - 1) * 864e5);
+     return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate(), wd: t.getUTCDay() };
+ }
+-// Date pictures: runs of Y, M, D or E, quoted literals and other characters.
+-function fcPicture(fmt) {
+-    var out = [], i = 0;
+-    while (i < fmt.length) {
+-        var c = fmt.charAt(i);
+-        if (c === "'") {
+-            var end = fmt.indexOf("'", i + 1);
+-            if (end < 0) end = fmt.length;
+-            out.push({ lit: fmt.substring(i + 1, end) });
+-            i = end + 1;
+-        } else if ("YMDE".indexOf(c) >= 0) {
+-            var k = i;
+-            while (k < fmt.length && fmt.charAt(k) === c) k++;
+-            out.push({ sym: fmt.substring(i, k) });
+-            i = k;
+-        } else {
+-            out.push({ lit: c });
+-            i++;
+-        }
++function fcPad(v, w) { v = String(v); while (v.length < w) v = "0" + v; return v; }
++function fcCanonicalDate(n) { var t = fcDateOf(n); return fcPad(t.y, 4) + "-" + fcPad(t.m, 2) + "-" + fcPad(t.d, 2); }
++function fcDayOfCanonical(c) { var m = /^(\d{4})-(\d\d)-(\d\d)/.exec(c || ""); return m ? fcDayNumber(+m[1], +m[2], +m[3]) : 0; }
++// Times count milliseconds from midnight GMT, with 1 for midnight so that 0
++// can mean an error. Zones east of GMT can give negative numbers.
++function fcLocalOffset() { return -new Date().getTimezoneOffset(); }
++function fcTimeOfCanonical(c) {
++    var m = /^(\d\d):(\d\d):(\d\d)(?:\.(\d{1,3}))?(Z|[+-]\d\d:\d\d)?$/.exec(c || "");
++    if (!m) return 0;
++    var ms = ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 + (m[4] ? +(m[4] + "00").substr(0, 3) : 0);
++    var offset = m[5] === "Z" ? 0 : m[5] ? (m[5].charAt(0) === "-" ? -1 : 1) * (+m[5].substr(1, 2) * 60 + +m[5].substr(4, 2)) : fcLocalOffset();
++    return ms - offset * 60000 + 1;
++}
++// The canonical local or GMT time of a number of milliseconds.
++function fcCanonicalTime(n, gmt) {
++    var ms = n - 1 + (gmt ? 0 : fcLocalOffset() * 60000);
++    ms = ((ms % 864e5) + 864e5) % 864e5;
++    var s = Math.floor(ms / 1000);
++    return fcPad(Math.floor(s / 3600), 2) + ":" + fcPad(Math.floor(s / 60) % 60, 2) + ":" + fcPad(s % 60, 2) + "." + fcPad(Math.floor(ms % 1000), 3) + (gmt ? "Z" : "");
++}
++// Date and time styles 1 to 4, short to full; others are the default.
++function fcStyle(n) { n = Math.trunc(fcNum(fcArg(n))); return ["med", "short", "med", "long", "full"][n >= 1 && n <= 4 ? n : 0]; }
++// An optional string argument, "" when left out.
++function fcOpt(v) { v = fcArg(v); return v === null || v === undefined ? "" : String(v); }
++
++// The arguments of a financial function as numbers, or null if one is null.
++function fcFinance(args) {
++    var out = [];
++    for (var i = 0; i < args.length; i++) {
++        var v = fcArg(args[i]);
++        if (v === null) return null;
++        out.push(fcNum(v));
+     }
+     return out;
+ }
+-function fcParseDate(s, fmt) {
+-    var y = null, m = null, d = null, pos = 0, tokens = fcPicture(fmt);
+-    function digits(min, max) {
+-        var k = pos;
+-        while (k < s.length && k - pos < max && s.charAt(k) >= "0" && s.charAt(k) <= "9") k++;
+-        if (k - pos < min) return null;
+-        var v = parseInt(s.substring(pos, k), 10);
+-        pos = k;
+-        return v;
+-    }
+-    function name(list, len) {
+-        for (var i = 0; i < list.length; i++) {
+-            var n = len ? list[i].substr(0, len) : list[i];
+-            if (s.substr(pos, n.length).toLowerCase() === n.toLowerCase()) { pos += n.length; return i; }
++function fcPositive(name, values) {
++    for (var i = 0; i < values.length; i++) if (!(values[i] > 0)) throw new Error(name + ": arguments must be greater than 0");
++}
++// The interest and principal paid from month first, for count months, on a
++// loan of p at an annual rate with a monthly payment. Nothing is paid when
++// the payment does not cover the interest.
++function fcAmortize(p, annual, pay, first, count) {
++    var r = annual / 12, balance = p, interest = 0, principal = 0;
++    if (pay <= p * r) return [0, 0];
++    for (var m = 1; m < first + count && balance > 0; m++) {
++        var i = balance * r, paid = pay - i;
++        if (m >= first) { interest += i; principal += paid; }
++        balance -= paid;
++    }
++    return [interest, principal];
++}
++
++var FC_ONES = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"];
++var FC_TENS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
++var FC_SCALES = ["", " Thousand", " Million", " Billion", " Trillion", " Quadrillion"];
++// English words for a whole number, as a BigInt.
++function fcWords(n) {
++    if (n === 0n) return "Zero";
++    var groups = [], parts = [];
++    while (n > 0n) { groups.push(Number(n % 1000n)); n /= 1000n; }
++    for (var i = groups.length - 1; i >= 0; i--) {
++        var g = groups[i], h = Math.floor(g / 100), rest = g % 100, w = h ? FC_ONES[h] + " Hundred" : "";
++        if (!g) continue;
++        if (rest) {
++            // "and" follows Hundred only in numbers below a thousand.
++            w += (h ? (groups.length === 1 ? " and " : " ") : "") + (rest < 20 ? FC_ONES[rest] : FC_TENS[Math.floor(rest / 10)] + (rest % 10 ? "-" + FC_ONES[rest % 10].toLowerCase() : ""));
+         }
+-        return null;
++        parts.push(w + FC_SCALES[i]);
+     }
+-    for (var i = 0; i < tokens.length; i++) {
+-        var t = tokens[i];
+-        if ("lit" in t) {
+-            if (s.substr(pos, t.lit.length) !== t.lit) return 0;
+-            pos += t.lit.length;
+-            continue;
+-        }
+-        var v;
+-        switch (t.sym) {
+-        case "YYYY": v = y = digits(4, 4); break;
+-        case "YY": v = digits(2, 2); if (v !== null) y = v < 50 ? 2000 + v : 1900 + v; break;
+-        case "MM": v = m = digits(2, 2); break;
+-        case "M": v = m = digits(1, 2); break;
+-        case "MMM": v = name(FC_MONTHS, 3); if (v !== null) m = v + 1; break;
+-        case "MMMM": v = name(FC_MONTHS, 0); if (v !== null) m = v + 1; break;
+-        case "DD": v = d = digits(2, 2); break;
+-        case "D": v = d = digits(1, 2); break;
+-        case "EEE": v = name(FC_DAYS, 3); break;
+-        case "EEEE": v = name(FC_DAYS, 0); break;
+-        default: return 0;
+-        }
+-        if (v === null) return 0;
+-    }
+-    if (pos !== s.length || y === null || m === null || d === null || m < 1 || m > 12 || d < 1 || d > 31) return 0;
+-    var n = fcDayNumber(y, m, d), check = fcDateOf(n);
+-    return check.m === m && check.d === d && n >= 1 ? n : 0;
+-}
+-function fcFormatDate(n, fmt) {
+-    var t = fcDateOf(n), tokens = fcPicture(fmt), out = "";
+-    function pad(v, w) { v = String(v); while (v.length < w) v = "0" + v; return v; }
+-    for (var i = 0; i < tokens.length; i++) {
+-        var k = tokens[i];
+-        if ("lit" in k) { out += k.lit; continue; }
+-        switch (k.sym) {
+-        case "YYYY": out += pad(t.y, 4); break;
+-        case "YY": out += pad(t.y % 100, 2); break;
+-        case "MM": out += pad(t.m, 2); break;
+-        case "M": out += t.m; break;
+-        case "MMM": out += FC_MONTHS[t.m - 1].substr(0, 3); break;
+-        case "MMMM": out += FC_MONTHS[t.m - 1]; break;
+-        case "DD": out += pad(t.d, 2); break;
+-        case "D": out += t.d; break;
+-        case "EEE": out += FC_DAYS[t.wd].substr(0, 3); break;
+-        case "EEEE": out += FC_DAYS[t.wd]; break;
+-        }
++    return parts.join(" ");
++}
++
++// Units per inch, by name.
++var FC_UNITS = { "in": ["in", 1], inches: ["in", 1], mm: ["mm", 25.4], millimeters: ["mm", 25.4], cm: ["cm", 2.54], centimeters: ["cm", 2.54], pt: ["pt", 72], points: ["pt", 72], pc: ["pc", 6], picas: ["pc", 6], mp: ["mp", 72000], millipoints: ["mp", 72000] };
++function fcUnit(name) { name = name.toLowerCase(); return Object.prototype.hasOwnProperty.call(FC_UNITS, name) ? FC_UNITS[name] : null; }
++// A unitspan: a number, inches when no unit follows, or a unit alone.
++function fcUnitspan(s) {
++    var m = /^\s*([-+]?(?:\d+\.?\d*|\.\d+)?)\s*([A-Za-z]*)\s*$/.exec(s);
++    var unit = m ? (m[2] ? fcUnit(m[2]) : FC_UNITS["in"]) : null;
++    if (!unit) return null;
++    return { value: /\d/.test(m[1]) ? Number(m[1]) : 0, unit: unit };
++}
++
++var FC_XML_ENTITIES = { amp: 38, lt: 60, gt: 62, quot: 34, apos: 39 };
++var FC_HTML_ENTITY_LIST = "AElig:198,Aacute:193,Acirc:194,Agrave:192,Alpha:913,Aring:197,Atilde:195,Auml:196,Beta:914,Ccedil:199,Chi:935,Dagger:8225,Delta:916,ETH:208,Eacute:201,Ecirc:202,Egrave:200,Epsilon:917,Eta:919,Euml:203,Gamma:915,Iacute:205,Icirc:206,Igrave:204,Iota:921,Iuml:207,Kappa:922,Lambda:923,Mu:924,Ntilde:209,Nu:925,OElig:338,Oacute:211,Ocirc:212,Ograve:210,Omega:937,Omicron:927,Oslash:216,Otilde:213,Ouml:214,Phi:934,Pi:928,Prime:8243,Psi:936,Rho:929,Scaron:352,Sigma:931,THORN:222,Tau:932,Theta:920,Uacute:218,Ucirc:219,Ugrave:217,Upsilon:933,Uuml:220,Xi:926,Yacute:221,Yuml:376,Zeta:918,aacute:225,acirc:226,acute:180,aelig:230,agrave:224,alefsym:8501,alpha:945,amp:38,and:8743,ang:8736,aring:229,asymp:8776,atilde:227,auml:228,bdquo:8222,beta:946,brvbar:166,bull:8226,cap:8745,ccedil:231,cedil:184,cent:162,chi:967,circ:710,clubs:9827,cong:8773,copy:169,crarr:8629,cup:8746,curren:164,dArr:8659,dagger:8224,darr:8595,deg:176,delta:948,diams:9830,divide:247,eacute:233,ecirc:234,egrave:232,empty:8709,emsp:8195,ensp:8194,epsilon:949,equiv:8801,eta:951,eth:240,euml:235,euro:8364,exist:8707,fnof:402,forall:8704,frac12:189,frac14:188,frac34:190,frasl:8260,gamma:947,ge:8805,gt:62,hArr:8660,harr:8596,hearts:9829,hellip:8230,iacute:237,icirc:238,iexcl:161,igrave:236,image:8465,infin:8734,int:8747,iota:953,iquest:191,isin:8712,iuml:239,kappa:954,lArr:8656,lambda:955,lang:9001,laquo:171,larr:8592,lceil:8968,ldquo:8220,le:8804,lfloor:8970,lowast:8727,loz:9674,lrm:8206,lsaquo:8249,lsquo:8216,lt:60,macr:175,mdash:8212,micro:181,middot:183,minus:8722,mu:956,nabla:8711,nbsp:160,ndash:8211,ne:8800,ni:8715,not:172,notin:8713,nsub:8836,ntilde:241,nu:957,oacute:243,ocirc:244,oelig:339,ograve:242,oline:8254,omega:969,omicron:959,oplus:8853,or:8744,ordf:170,ordm:186,oslash:248,otilde:245,otimes:8855,ouml:246,para:182,part:8706,permil:8240,perp:8869,phi:966,pi:960,piv:982,plusmn:177,pound:163,prime:8242,prod:8719,prop:8733,psi:968,quot:34,rArr:8658,radic:8730,rang:9002,raquo:187,rarr:8594,rceil:8969,rdquo:8221,real:8476,reg:174,rfloor:8971,rho:961,rlm:8207,rsaquo:8250,rsquo:8217,sbquo:8218,scaron:353,sdot:8901,sect:167,shy:173,sigma:963,sigmaf:962,sim:8764,spades:9824,sub:8834,sube:8838,sum:8721,sup:8835,sup1:185,sup2:178,sup3:179,supe:8839,szlig:223,tau:964,there4:8756,theta:952,thetasym:977,thinsp:8201,thorn:254,tilde:732,times:215,trade:8482,uArr:8657,uacute:250,uarr:8593,ucirc:251,ugrave:249,uml:168,upsih:978,upsilon:965,uuml:252,weierp:8472,xi:958,yacute:253,yen:165,yuml:255,zeta:950,zwj:8205,zwnj:8204";
++var fcHtmlEntities = null;
++function fcEntity(name, xml) {
++    var table = xml ? FC_XML_ENTITIES : fcHtmlEntities;
++    if (!xml && !table) {
++        table = fcHtmlEntities = Object.create(null);
++        FC_HTML_ENTITY_LIST.split(",").forEach(function (e) { var k = e.indexOf(":"); table[e.substr(0, k)] = +e.substr(k + 1); });
+     }
+-    return out;
++    return Object.prototype.hasOwnProperty.call(table, name) ? table[name] : undefined;
+ }
+-var FC_DATE_FORMATS = ["MMM D, YYYY", "M/D/YY", "MMM D, YYYY", "MMMM D, YYYY", "EEEE, MMMM D, YYYY"];
+ function fcString(v) { v = fcArg(v); return v === null ? null : String(v); }
+ 
+ // Built-in functions, by lower-case name.
+@@ -787,12 +792,186 @@ FCRuntime.prototype.fn = {
+     },
+     at: function (s, sub) { s = fcString(s); sub = fcString(sub); return s === null || sub === null ? 0 : s.indexOf(sub) + 1; },
+     date: function () { var t = new Date(); return fcDayNumber(t.getFullYear(), t.getMonth() + 1, t.getDate()); },
+-    date2num: function (d, fmt) { d = fcString(d); return d === null ? 0 : fcParseDate(d, fmt === undefined ? "YYYY-MM-DD" : fcString(fmt)); },
+-    isodate2num: function (d) { d = fcString(d); return d === null ? 0 : fcParseDate(d, "YYYY-MM-DD") || fcParseDate(d, "YYYYMMDD"); },
+-    num2date: function (n, fmt) { n = fcNum(fcArg(n)); return n < 1 ? "" : fcFormatDate(n, fmt === undefined ? FC_DATE_FORMATS[0] : fcString(fmt)); },
+-    datefmt: function (style) { return FC_DATE_FORMATS[Math.max(0, Math.min(4, fcNum(fcArg(style))))]; },
+-    localdatefmt: function (style) { return FC_DATE_FORMATS[Math.max(0, Math.min(4, fcNum(fcArg(style))))]; },
+-    time: function () { var t = new Date(); return ((t.getHours() * 60 + t.getMinutes()) * 60 + t.getSeconds()) * 1000 + t.getMilliseconds(); },
++    // Dates and times use the picture clauses of the locale k, or else of
++    // the object running the script.
++    date2num: function (d, f, k) {
++        d = fcString(d);
++        return d === null ? 0 : fcDayOfCanonical(N.picture(this.ctx, "date{" + (f === undefined ? "MMM D, YYYY" : fcOpt(f)) + "}", d, fcOpt(k), true));
++    },
++    isodate2num: function (d) {
++        d = fcString(d);
++        var m = d === null ? null : /^(\d{4})(?:-?(\d\d)(?:-?(\d\d))?)?(?:T.*)?$/.exec(d);
++        if (!m) return 0;
++        var n = fcDayNumber(+m[1], +(m[2] || 1), +(m[3] || 1));
++        return n >= 1 && fcCanonicalDate(n) === m[1] + "-" + (m[2] || "01") + "-" + (m[3] || "01") ? n : 0;
++    },
++    num2date: function (n, f, k) {
++        n = Math.trunc(fcNum(fcArg(n)));
++        if (n < 1) return "";
++        var r = N.picture(this.ctx, "date{" + (f === undefined ? "MMM D, YYYY" : fcOpt(f)) + "}", fcCanonicalDate(n), fcOpt(k), false);
++        return r === null ? "" : r;
++    },
++    datefmt: function (n, k) { return N.localePattern(this.ctx, "date", fcStyle(n), fcOpt(k), false); },
++    localdatefmt: function (n, k) { return N.localePattern(this.ctx, "date", fcStyle(n), fcOpt(k), true); },
++    time: function () { return Date.now() % 864e5 + 1; },
++    time2num: function (d, f, k) {
++        d = fcString(d);
++        return d === null ? 0 : fcTimeOfCanonical(N.picture(this.ctx, "time{" + (f === undefined ? "H:MM:SS A" : fcOpt(f)) + "}", d, fcOpt(k), true));
++    },
++    isotime2num: function (d) {
++        d = fcString(d);
++        var m = d === null ? null : /^(?:\d{4}-?\d\d-?\d\dT)?(\d\d)(?::?(\d\d)(?::?(\d\d)(?:\.(\d{1,3}))?)?)?(Z|[+-]\d\d(?::?\d\d)?)?$/.exec(d);
++        if (!m || +m[1] > 23 || +(m[2] || 0) > 59 || +(m[3] || 0) > 59) return 0;
++        var zone = m[5] || "";
++        if (zone && zone !== "Z") zone = zone.substr(0, 3) + ":" + (zone.length > 3 ? zone.substr(zone.length - 2) : "00");
++        return fcTimeOfCanonical(m[1] + ":" + (m[2] || "00") + ":" + (m[3] || "00") + (m[4] ? "." + m[4] : "") + zone);
++    },
++    num2time: function (n, f, k) {
++        n = fcArg(n);
++        if (n === null) return null;
++        var r = N.picture(this.ctx, "time{" + (f === undefined ? "H:MM:SS A" : fcOpt(f)) + "}", fcCanonicalTime(fcNum(n), false), fcOpt(k), false);
++        return r === null ? "" : r;
++    },
++    num2gmtime: function (n, f, k) {
++        n = fcArg(n);
++        if (n === null) return null;
++        var r = N.picture(this.ctx, "time{" + (f === undefined ? "H:MM:SS A" : fcOpt(f)) + "}", fcCanonicalTime(fcNum(n), true), fcOpt(k), false);
++        return r === null ? "" : r;
++    },
++    timefmt: function (n, k) { return N.localePattern(this.ctx, "time", fcStyle(n), fcOpt(k), false); },
++    localtimefmt: function (n, k) { return N.localePattern(this.ctx, "time", fcStyle(n), fcOpt(k), true); },
++    format: function (picture, v) {
++        picture = fcString(picture);
++        v = fcArg(v);
++        if (picture === null) return null;
++        var r = N.picture(this.ctx, picture, v === null ? "" : String(v), "", false);
++        return r === null ? "" : r;
++    },
++    parse: function (picture, s) {
++        picture = fcString(picture);
++        s = fcString(s);
++        if (picture === null || s === null) return null;
++        var r = N.picture(this.ctx, picture, s, "", true);
++        return r === null ? "" : r;
++    },
++    // Financial functions follow Adobe's FormCalc reference. Apr solves for
++    // the exact rate; Adobe's published examples come from a coarser
++    // iteration and differ from the seventh digit on.
++    apr: function (p, pay, n) {
++        var a = fcFinance([p, pay, n]);
++        if (!a) return null;
++        fcPositive("Apr", a);
++        if (a[1] * a[2] <= a[0]) return 0;
++        var lo = 0, hi = 1;
++        for (var i = 0; i < 200; i++) {
++            var mid = (lo + hi) / 2;
++            if (mid > 0 && a[0] * mid / (1 - Math.pow(1 + mid, -a[2])) > a[1]) hi = mid; else lo = mid;
++        }
++        return 12 * lo;
++    },
++    cterm: function (r, fv, pv) {
++        var a = fcFinance([r, fv, pv]);
++        if (!a) return null;
++        fcPositive("CTerm", a);
++        return Math.log(a[1] / a[2]) / Math.log(1 + a[0]);
++    },
++    fv: function (pay, r, n) {
++        var a = fcFinance([pay, r, n]);
++        if (!a) return null;
++        if (!(a[0] > 0) || !(a[2] > 0) || a[1] < 0) throw new Error("FV: invalid arguments");
++        return a[1] === 0 ? a[0] * a[2] : a[0] * (Math.pow(1 + a[1], a[2]) - 1) / a[1];
++    },
++    ipmt: function (p, r, pay, first, count) {
++        var a = fcFinance([p, r, pay, first, count]);
++        if (!a) return null;
++        fcPositive("IPmt", a.slice(0, 3));
++        if (a[3] < 0 || a[4] < 0) throw new Error("IPmt: invalid arguments");
++        return fcAmortize(a[0], a[1], a[2], a[3], a[4])[0];
++    },
++    npv: function (r) {
++        var a = fcFinance(Array.prototype.slice.call(arguments));
++        if (!a) return null;
++        if (!(a[0] > 0)) throw new Error("NPV: the rate must be greater than 0");
++        var v = 0;
++        for (var i = 1; i < a.length; i++) v += a[i] / Math.pow(1 + a[0], i);
++        return v;
++    },
++    pmt: function (p, r, n) {
++        var a = fcFinance([p, r, n]);
++        if (!a) return null;
++        fcPositive("Pmt", a);
++        return a[0] * a[1] / (1 - Math.pow(1 + a[1], -a[2]));
++    },
++    ppmt: function (p, r, pay, first, count) {
++        var a = fcFinance([p, r, pay, first, count]);
++        if (!a) return null;
++        fcPositive("PPmt", a.slice(0, 3));
++        if (a[3] < 0 || a[4] < 0) throw new Error("PPmt: invalid arguments");
++        return fcAmortize(a[0], a[1], a[2], a[3], a[4])[1];
++    },
++    pv: function (pay, r, n) {
++        var a = fcFinance([pay, r, n]);
++        if (!a) return null;
++        if (!(a[0] > 0) || !(a[2] > 0)) throw new Error("PV: invalid arguments");
++        return a[1] === 0 ? a[0] * a[2] : a[0] * (1 - Math.pow(1 + a[1], -a[2])) / a[1];
++    },
++    rate: function (fv, pv, n) {
++        var a = fcFinance([fv, pv, n]);
++        if (!a) return null;
++        fcPositive("Rate", a);
++        return Math.pow(a[0] / a[1], 1 / a[2]) - 1;
++    },
++    term: function (pay, r, fv) {
++        var a = fcFinance([pay, r, fv]);
++        if (!a) return null;
++        fcPositive("Term", a);
++        return Math.log(1 + a[2] * a[1] / a[0]) / Math.log(1 + a[1]);
++    },
++    wordnum: function (n, f) {
++        n = fcArg(n);
++        var x = n === null ? NaN : typeof n === "number" ? n : FC_NUMBER.test(String(n)) ? Number(n) : NaN;
++        if (!(x >= 0) || Math.floor(x) > 922337203685477550) return "*";
++        var style = Math.trunc(fcNum(fcArg(f))), out = fcWords(BigInt(Math.floor(x)));
++        if (style === 1 || style === 2) out += " Dollars";
++        if (style === 2) out += " And " + fcWords(BigInt(Math.min(99, Math.round((x - Math.floor(x)) * 100)))) + " Cents";
++        return out;
++    },
++    unittype: function (s) {
++        s = fcString(s);
++        var u = s === null ? null : fcUnitspan(s);
++        return u ? u.unit[0] : "in";
++    },
++    unitvalue: function (s, to) {
++        s = fcString(s);
++        var u = s === null ? null : fcUnitspan(s);
++        if (!u) return 0;
++        var target = to === undefined ? u.unit : fcUnit(fcOpt(to).trim()) || FC_UNITS["in"];
++        return u.value / u.unit[1] * target[1];
++    },
++    // A FormCalc expression in a string, which cannot see the variables and
++    // functions of the script.
++    eval: function (s) {
++        s = fcString(s);
++        if (s === null) return null;
++        var v = new Function("return " + N.formCalcToJS(s) + ";").call(wrap(this.ctx));
++        return v === undefined ? null : v;
++    },
++    null: function () { return null; },
++    ref: function (v) {
++        if (v instanceof FCRef) return v.rt.object(v.som);
++        v = fcArg(v);
++        if (typeof v !== "string") return v;
++        try {
++            var o = this.object(v);
++            return o === null || o === undefined ? v : o;
++        } catch (e) {
++            return v;
++        }
++    },
++    // Forms may not reach the network.
++    get: function () { throw new Error("Get() is not supported"); },
++    post: function () { throw new Error("Post() is not supported"); },
++    put: function () { throw new Error("Put() is not supported"); },
+     choose: function (n) { var k = Math.trunc(fcNum(fcArg(n))); return k >= 1 && k < arguments.length ? fcArg(arguments[k]) : ""; },
+     hasvalue: function (v) { v = fcArg(v); return v !== null && String(v).trim() !== "" ? 1 : 0; },
+     exists: function (r) {
+@@ -803,8 +982,37 @@ FCRuntime.prototype.fn = {
+     oneof: function (v) { v = fcArg(v); for (var i = 1; i < arguments.length; i++) if (fcEqual(v, fcArg(arguments[i]))) return 1; return 0; },
+     within: function (v, lo, hi) { v = fcArg(v); return fcCompare(v, fcArg(lo)) >= 0 && fcCompare(v, fcArg(hi)) <= 0 ? 1 : 0; },
+     uuid: function () { var s = ""; for (var i = 0; i < 32; i++) s += Math.floor(Math.random() * 16).toString(16); return s; },
+-    encode: function (s) { s = fcString(s); return s === null ? null : encodeURIComponent(s); },
+-    decode: function (s) { s = fcString(s); try { return s === null ? null : decodeURIComponent(s); } catch (e) { return s; } }
++    encode: function (s, type) {
++        s = fcString(s);
++        if (s === null) return null;
++        type = type === undefined ? "url" : fcOpt(type).toLowerCase();
++        if (type !== "html" && type !== "xml") return encodeURI(s);
++        var out = "";
++        for (var i = 0; i < s.length; i++) {
++            var c = s.codePointAt(i), ch = String.fromCodePoint(c);
++            if (c > 0xffff) i++;
++            if (ch === "&") out += "&amp;";
++            else if (ch === "<") out += "&lt;";
++            else if (ch === ">") out += "&gt;";
++            else if (ch === "\"") out += "&quot;";
++            else if (ch === "'" && type === "xml") out += "&apos;";
++            else if (c > 127) out += "&#x" + c.toString(16) + ";";
++            else out += ch;
++        }
++        return out;
++    },
++    decode: function (s, type) {
++        s = fcString(s);
++        if (s === null) return null;
++        type = type === undefined ? "url" : fcOpt(type).toLowerCase();
++        if (type === "html" || type === "xml") {
++            return s.replace(/&(#[xX][0-9a-fA-F]+|#\d+|[A-Za-z][A-Za-z0-9]*);/g, function (all, e) {
++                var c = e.charAt(0) !== "#" ? fcEntity(e, type === "xml") : /[xX]/.test(e.charAt(1)) ? parseInt(e.substr(2), 16) : parseInt(e.substr(1), 10);
++                return c !== undefined && c >= 0 && c <= 0x10ffff ? String.fromCodePoint(c) : all;
++            });
++        }
++        try { return decodeURIComponent(s); } catch (e) { return s; }
++    }
+ };
+ 
+ g.__fcRuntime = function (self) { return new FCRuntime(idOf(self)); };
+@@ -1438,6 +1646,55 @@ NATIVE(language)
+     return strValue(ctx, formOf(ctx)->getLanguage());
+ }
+ 
++// The locale named by an argument if the form or poppler knows it, or else
++// the ambient locale of the node.
++std::string localeArg(JSContext *ctx, JSValueConst node, JSValueConst name)
++{
++    XFAForm *form = formOf(ctx);
++    const std::string k = strArg(ctx, name);
++    if (!k.empty() && XFAFindLocale(form->getLocales(), k)) {
++        return k;
++    }
++    const XFANode *n = nodeArg(ctx, node);
++    return n ? form->localeOf(n) : form->getLanguage();
++}
++
++// picture(node, picture, value, locale, parse): value formatted, or text
++// parsed, with a picture clause; null when it does not fit.
++NATIVE(picture)
++{
++    XFAForm *form = formOf(ctx);
++    const std::string locale = localeArg(ctx, ARG(0), ARG(3));
++    const std::string picture = strArg(ctx, ARG(1));
++    const std::string value = strArg(ctx, ARG(2));
++    return optValue(ctx, JS_ToBool(ctx, ARG(4)) == 1 ? XFAPictureParse(picture, value, locale, form->getLocales()) : XFAPictureFormat(picture, value, locale, form->getLocales()));
++}
++
++// localePattern(node, kind, style, locale, localized): the date or time
++// pattern of a locale for a style, in the standard symbols or the locale's.
++NATIVE(localePattern)
++{
++    XFAForm *form = formOf(ctx);
++    const std::string name = localeArg(ctx, ARG(0), ARG(3));
++    const XFALocale l = XFAFindLocale(form->getLocales(), name).value_or(XFABuiltinLocale({}));
++    const bool time = strArg(ctx, ARG(1)) == "time";
++    const std::map<std::string, std::string> &patterns = time ? l.timePatterns : l.datePatterns;
++    const auto it = patterns.find(strArg(ctx, ARG(2)));
++    const std::string pattern = it == patterns.end() ? std::string() : it->second;
++    return strValue(ctx, JS_ToBool(ctx, ARG(4)) == 1 ? XFALocalizePattern(l, pattern, time) : pattern);
++}
++
++// formCalcToJS(source): the JavaScript for FormCalc, for Eval().
++NATIVE(formCalcToJS)
++{
++    std::string error;
++    const std::optional<std::string> js = XFAFormCalcToJS(strArg(ctx, ARG(0)), &error);
++    if (!js) {
++        return JS_ThrowSyntaxError(ctx, "FormCalc: %s", error.c_str());
++    }
++    return strValue(ctx, *js);
++}
++
+ NATIVE(resetData)
+ {
+     formOf(ctx)->resetData(nodeArg(ctx, ARG(0)));
+@@ -1625,6 +1882,9 @@ const NativeEntry natives[] = { ENTRY(alive, 1),
+                                 ENTRY(removeNode, 1),
+                                 ENTRY(appendNode, 2),
+                                 ENTRY(createNode, 2),
++                                ENTRY(picture, 5),
++                                ENTRY(localePattern, 5),
++                                ENTRY(formCalcToJS, 1),
+                                 ENTRY(execValidate, 1),
+                                 ENTRY(fireEvent, 2),
+                                 ENTRY(runCalcs, 0),
+-- 
+2.43.0
+

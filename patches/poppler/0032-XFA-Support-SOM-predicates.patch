@@ -1,0 +1,254 @@
+From 85f8f60f899fe9cf4444e7d332fff9c6352c3ac9 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 14:48:39 -0700
+Subject: [PATCH] XFA: Support SOM predicates
+
+A SOM expression can choose among the occurrences of an object with a
+predicate, as in Detail.[Qty > 2].Desc: .[expression] holds FormCalc and
+.(expression) JavaScript. Resolve the names before the predicate to all
+their occurrences, keep those for which the expression is true when
+evaluated on them, and go on resolving from each. The FormCalc
+translator keeps the text of predicates for the resolver.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c | 43 +++++++++++++++++++++++++++
+ poppler/XFAFormCalc.cc | 25 ++++++++++++++--
+ poppler/XFAScript.cc   | 67 ++++++++++++++++++++++++++++++++++++------
+ 3 files changed, 124 insertions(+), 11 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 40804a3..89d8877 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -1180,6 +1180,48 @@ static void test_default_ui(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* SOM predicates choose among the occurrences of an object: .[FormCalc] in
++ * FormCalc and JavaScript, .(JavaScript) in JavaScript. */
++static void test_som_predicates(void)
++{
++    const char *xml = "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                      "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                      "<subform name=\"form1\" layout=\"tb\"><pageSet><pageArea name=\"Page1\">"
++                      "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                      "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
++                      "<subform name=\"Detail\" layout=\"lr-tb\" w=\"6in\"><occur min=\"3\" max=\"3\"/>"
++                      "<field name=\"Qty\" w=\"1in\" h=\"0.3in\"><ui><numericEdit/></ui></field>"
++                      "<field name=\"Desc\" w=\"1in\" h=\"0.3in\"><ui><textEdit/></ui></field></subform>"
++                      "<field name=\"fc\" w=\"6in\" h=\"0.3in\" access=\"nonInteractive\"><ui><textEdit/></ui><calculate><script>"
++                      "Concat(\"fc=\", Count(Detail.[Qty &gt; 2].Desc), \"|\", Sum(Detail.[Qty &gt; 2].Qty), \"|\", Detail.[Desc == \"b\"].Qty)"
++                      "</script></calculate></field>"
++                      "<field name=\"js\" w=\"6in\" h=\"0.3in\" access=\"nonInteractive\"><ui><textEdit/></ui>"
++                      "<calculate><script contentType=\"application/x-javascript\">"
++                      "\"js=\" + xfa.resolveNodes(\"Detail.(Qty.rawValue &lt; 6)\").length + \"|\" + xfa.resolveNode(\"Detail.[Qty &gt; 6].Desc\").rawValue"
++                      "</script></calculate></field>"
++                      "</subform></template>"
++                      "<xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\"><xfa:data><form1>"
++                      "<Detail><Qty>1</Qty><Desc>a</Desc></Detail><Detail><Qty>5</Qty><Desc>b</Desc></Detail>"
++                      "<Detail><Qty>9</Qty><Desc>c</Desc></Detail></form1></xfa:data></xfa:datasets></xdp:xdp>";
++    GBytes *bytes = build_pdf_from(xml);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    char *text = page_text(rendered);
++    if (!strstr(text, "fc=")) {
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        g_assert_nonnull(strstr(text, "fc=2|14|5"));
++        g_assert_nonnull(strstr(text, "js=2|c"));
++    }
++    g_free(text);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ /* Default patterns and names come from the form's locales, then from the
+  * built-in ones; null{} and zero{} apply only to null and zero values. */
+ static void test_locales(void)
+@@ -1282,5 +1324,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/default-ui", test_default_ui);
+     g_test_add_func("/xfa/deep-script-tree", test_deep_script_tree);
+     g_test_add_func("/xfa/locales", test_locales);
++    g_test_add_func("/xfa/som-predicates", test_som_predicates);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAFormCalc.cc b/poppler/XFAFormCalc.cc
+index e64cba1..6e0a8e4 100644
+--- a/poppler/XFAFormCalc.cc
++++ b/poppler/XFAFormCalc.cc
+@@ -250,7 +250,7 @@ const std::set<std::string> &builtins()
+ class Translator
+ {
+ public:
+-    explicit Translator(std::vector<Token> tokensA) : tokens(std::move(tokensA))
++    Translator(std::vector<Token> tokensA, const std::string &sourceA) : tokens(std::move(tokensA)), source(sourceA)
+     {
+         // Functions may be called before they are declared.
+         for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+@@ -622,6 +622,26 @@ private:
+             if (isPunct(peek(), ".") || isPunct(peek(), "..")) {
+                 const std::string dot = next().text;
+                 std::string seg;
++                // A predicate, .[expression], keeps its FormCalc text for
++                // the SOM resolver to evaluate on each object.
++                if (dot == "." && isPunct(peek(), "[")) {
++                    const size_t start = next().pos + 1;
++                    int nesting = 1;
++                    while (nesting > 0 && peek().kind != Token::End) {
++                        const Token t = next();
++                        if (isPunct(t, "[")) {
++                            ++nesting;
++                        } else if (isPunct(t, "]") && --nesting == 0) {
++                            som += " + " + jsString(".[" + source.substr(start, t.pos - start) + "]");
++                        }
++                    }
++                    if (nesting > 0) {
++                        fail("expected ']'");
++                        return {};
++                    }
++                    simpleName = false;
++                    continue;
++                }
+                 if (acceptPunct("#")) {
+                     seg = "#" + next().text;
+                 } else if (acceptPunct("*")) {
+@@ -676,6 +696,7 @@ private:
+     }
+ 
+     std::vector<Token> tokens;
++    const std::string &source;
+     size_t index = 0;
+     std::set<std::string> locals;
+     std::set<std::string> functions;
+@@ -694,6 +715,6 @@ std::optional<std::string> XFAFormCalcToJS(const std::string &formCalc, std::str
+     if (!lexer.run(tokens, error)) {
+         return std::nullopt;
+     }
+-    Translator translator(std::move(tokens));
++    Translator translator(std::move(tokens), formCalc);
+     return translator.run(error);
+ }
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 9aa7af9..46c47ea 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -130,15 +130,64 @@ InstanceManager.prototype = {
+ };
+ function im(pair) { return pair ? new InstanceManager(pair) : null; }
+ 
++// SOM expressions with predicates: name.[FormCalc] or name.(JavaScript)
++// keeps the objects named so far for which the expression is true, and
++// resolution goes on from each of them.
++function findPredicate(som) {
++    var quote = null;
++    for (var i = 0; i + 1 < som.length; i++) {
++        var c = som.charAt(i);
++        if (quote) { if (c === quote) quote = null; continue; }
++        if (c === "'" || c === "\"") { quote = c; continue; }
++        if (c !== "." || (som.charAt(i + 1) !== "[" && som.charAt(i + 1) !== "(")) continue;
++        var open = som.charAt(i + 1), close = open === "[" ? "]" : ")", depth = 0, q = null;
++        for (var k = i + 1; k < som.length; k++) {
++            var d = som.charAt(k);
++            if (q) { if (d === q) q = null; continue; }
++            if (d === "'" || d === "\"") q = d;
++            else if (d === open) depth++;
++            else if (d === close && --depth === 0) return { at: i, end: k, formCalc: open === "[", expr: som.substring(i + 2, k) };
++        }
++        return null;
++    }
++    return null;
++}
++function predicateHolds(id, p) {
++    try {
++        if (p.formCalc) {
++            var v = (function () { return eval(N.formCalcToJS(p.expr)); }).call(wrap(id));
++            return v !== null && v !== undefined && fcNum(v) !== 0;
++        }
++        return !!(function () { with (scopeFor(id)) { return eval(p.expr); } }).call(wrap(id));
++    } catch (e) {
++        return false;
++    }
++}
++function somResolve(id, som, inherit) {
++    var p = findPredicate(som);
++    if (!p) return N.resolve(id, som, inherit);
++    var prefix = som.substring(0, p.at);
++    // The predicate chooses among all occurrences of the last name.
++    if (!/\]$/.test(prefix)) prefix += "[*]";
++    var rest = som.substring(p.end + 1).replace(/^\./, ""), out = [];
++    var candidates = N.resolve(id, prefix, inherit);
++    for (var i = 0; i < candidates.length; i++) {
++        if (!predicateHolds(candidates[i], p)) continue;
++        if (!rest) out.push(candidates[i]);
++        else out = out.concat(somResolve(candidates[i], rest, false));
++    }
++    return out;
++}
++
+ var methods = {
+     resolveNode: function (id, som) {
+-        var r = N.resolve(id, String(som), false);
++        var r = somResolve(id, String(som), false);
+         if (r.length) return wrap(r[0]);
+         // A content type a value does not hold reads as empty, as in Acrobat.
+         var m = /^#(\w+)$/.exec(String(som));
+         return m && N.cls(id) === "value" && VALUE_CONTENT[m[1]] ? wrap(N.createNode(m[1], "")) : null;
+     },
+-    resolveNodes: function (id, som) { return staticList(N.resolve(id, String(som), false)); },
++    resolveNodes: function (id, som) { return staticList(somResolve(id, String(som), false)); },
+     execValidate: function (id) { return N.execValidate(id); },
+     execCalculate: function () { N.runCalcs(); },
+     execInitialize: function (id) { N.fireEvent(id, "initialize"); },
+@@ -407,8 +456,8 @@ function pad2(n) { return (n < 10 ? "0" : "") + n; }
+ 
+ var running = [];
+ function resolveGlobal(som) {
+-    var r = N.resolve(N.formModel(), som, false);
+-    if (!r.length && running.length) r = N.resolve(running[running.length - 1], som, true);
++    var r = somResolve(N.formModel(), som, false);
++    if (!r.length && running.length) r = somResolve(running[running.length - 1], som, true);
+     return r;
+ }
+ 
+@@ -448,7 +497,7 @@ var xfa = {
+             if (som === undefined || som === null || som === "") { N.resetData(null); return; }
+             var parts = String(som).split(",");
+             for (var i = 0; i < parts.length; i++) {
+-                var ids = N.resolve(N.formModel(), parts[i]);
++                var ids = somResolve(N.formModel(), parts[i], false);
+                 for (var k = 0; k < ids.length; k++) N.resetData(ids[k]);
+             }
+         }
+@@ -522,8 +571,8 @@ function fcSegments(som) {
+     var parts = [], depth = 0, cur = "";
+     for (var i = 0; i < som.length; i++) {
+         var c = som.charAt(i);
+-        if (c === "[") depth++;
+-        else if (c === "]") depth--;
++        if (c === "[" || c === "(") depth++;
++        else if (c === "]" || c === ")") depth--;
+         if (c === "." && depth === 0) { parts.push(cur); cur = ""; } else cur += c;
+     }
+     parts.push(cur);
+@@ -577,11 +626,11 @@ FCRuntime.prototype = {
+             for (var i = 1; i < parts.length && o !== undefined && o !== null; i++) o = o[parts[i]];
+             return { host: o };
+         }
+-        var ids = N.resolve(this.ctx, som, true);
++        var ids = somResolve(this.ctx, som, true);
+         if (ids.length) return { nodes: ids };
+         // A property of an object, such as rawValue.
+         if (parts.length > 1) {
+-            ids = N.resolve(this.ctx, parts.slice(0, -1).join("."), true);
++            ids = somResolve(this.ctx, parts.slice(0, -1).join("."), true);
+             if (ids.length) return { nodes: ids, prop: parts[parts.length - 1] };
+         }
+         return { nodes: [] };
+-- 
+2.43.0
+

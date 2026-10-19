@@ -41,8 +41,8 @@ For the tested form, in the patched Evince:
 Known gaps, most of them found with the [corpus](corpus/README.md); the full
 developer list of what still needs fixing and why is in [KNOWN_ISSUES.md](KNOWN_ISSUES.md):
 
-- FormCalc runs translated to JavaScript, without SOM predicates (`a.[b > 1]`), the
-  financial functions or picture-clause functions such as `Format()`.
+- FormCalc runs translated to JavaScript, with SOM predicates and all its built-in
+  functions except the network ones (`Get()`, `Post()`, `Put()`), which forms may not use.
 - Data binding is simplified: values are matched to data by name, `dataRef` bindings
   are ignored, and the form's values are kept in the form, not in the data DOM.
 - Picture clauses take their names, symbols and default patterns from the form's
@@ -176,6 +176,8 @@ Poppler (`patches/poppler/`, about 13,200 added lines):
 | 0028 | Compute image sizes in floating point, avoiding an integer overflow |
 | 0029 | Document that URLs from XFA scripts are unchecked (glib API) |
 | 0030 | Locale symbols and default patterns from the form's localeSet; time and date-time pictures; `null{}`/`zero{}` only for null and zero values |
+| 0031 | The rest of FormCalc's built-in functions: financial, time, `Format()`, `Parse()`, `WordNum()`, units, `Eval()`, `Ref()` |
+| 0032 | SOM predicates: `Detail.[Qty > 2]` in FormCalc, `.(…)` in JavaScript |
 
 Evince (`patches/evince/`, about 1,150 added lines):
 
