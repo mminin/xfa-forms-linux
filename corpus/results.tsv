@@ -57,7 +57,7 @@ cpt69-fill-21e.pdf	dynamic	fallback message only	3	0	-
 cpt70-fill-21e.pdf	dynamic	fallback message only	3	0	-
 cpt71-fill-21e.pdf	dynamic	fallback message only	3	0	-
 cpt72-fill-21e.pdf	dynamic	fallback message only	3	0	-
-inns3-fill-19e.pdf	dynamic	fallback message only	1	2	-
+inns3-fill-19e.pdf	dynamic	fallback message only	1	0	-
 nr302-fill-13e.pdf	dynamic	fallback message only	11	0	-
 nr303-fill-13e.pdf	dynamic	fallback message only	9	0	-
 rc243-fill-26e.pdf	dynamic	fallback message only	5	6	-
@@ -76,19 +76,19 @@ t1134-fill-21e.pdf	dynamic	fallback message only	17	0	-
 t1135-fill-23e.pdf	dynamic	fallback message only	6	0	-
 t1141-fill-25e.pdf	dynamic	fallback message only	7	0	-
 t1142-fill-25e.pdf	dynamic	fallback message only	5	0	-
-t1235-fill-20e.pdf	dynamic	fallback message only	2	1	-
-t1236-fill-19e.pdf	dynamic	fallback message only	2	3	-
+t1235-fill-20e.pdf	dynamic	fallback message only	2	0	-
+t1236-fill-19e.pdf	dynamic	fallback message only	3	2	-
 t1322-fill-26e.pdf	dynamic	fallback message only	6	0	-
-t1441-fill-24e.pdf	dynamic	fallback message only	3	1	-
+t1441-fill-24e.pdf	dynamic	fallback message only	3	0	-
 t2151-fill-25e.pdf	dynamic	fallback message only	3	0	-
 t2sch75-fill-26e.pdf	dynamic	fallback message only	4	0	-
 t3010-fill-24e.pdf	dynamic	fallback message only	12	0	-
-t3ao-fill-23e.pdf	dynamic	fallback message only	1	2	-
-t3inns3-fill-23e.pdf	dynamic	fallback message only	1	2	-
+t3ao-fill-23e.pdf	dynamic	fallback message only	1	0	-
+t3inns3-fill-23e.pdf	dynamic	fallback message only	1	0	-
 t3sch15-fill-25e.pdf	dynamic	fallback message only	2	0	-
 t657-fill-25e.pdf	dynamic	fallback message only	7	0	-
 t661-fill-26e.pdf	dynamic	fallback message only	11	0	-
-t7dr-fill-19e.pdf	dynamic	fallback message only	1	2	-
+t7dr-fill-19e.pdf	dynamic	fallback message only	1	0	-
 consent-letter-2123.pdf	dynamic	fallback message only	2	0	-
 imm0008enu_2d.pdf	dynamic	fallback message only	6	0	-
 imm1294e.pdf	dynamic	fallback message only	6	0	-
@@ -114,7 +114,7 @@ GC-NAS2120.pdf	static	form content	8	0	-
 ISP-1000.pdf	static	form content	14	0	-
 ISP-1151.pdf	static	form content	28	0	-
 ISP-1200.pdf	static	form content	12	0	-
-ISP-1300.pdf	static	form content	17	0	jpeg
+ISP-1300.pdf	static	form content	17	0	-
 ISP-2502.pdf	static	form content	3	0	-
 ISP-3025.pdf	static	form content	8	0	-
 ISP-3550.pdf	static	form content	10	0	-
@@ -124,7 +124,7 @@ imm1283e.pdf	static	form content	7	0	-
 imm5409e.pdf	static	form content	1	0	-
 imm5476e.pdf	static	form content	4	0	-
 imm5645e.pdf	static	form content	2	0	-
-pptc040.pdf	static	form content	10	6	tiff
-pptc054.pdf	static	form content	7	0	tiff
-pptc153.pdf	static	form content	10	0	tiff
-pptc155.pdf	static	form content	12	0	tiff
+pptc040.pdf	static	form content	10	6	-
+pptc054.pdf	static	form content	7	0	-
+pptc153.pdf	static	form content	10	0	-
+pptc155.pdf	static	form content	12	0	-

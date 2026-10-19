@@ -24,7 +24,7 @@ scripts/check-corpus.sh   # page 1 without XFA support vs. the XFA engine, per f
   calculations, sections that appear as you answer, validation, and the barcodes that
   some forms print.
 
-## Findings (tested 2026-10-16)
+## Findings (tested 2026-10-16, engine rechecked 2026-10-19)
 
 This project started with Global Affairs Canada's
 [consent letter for children travelling outside Canada](https://travel.gc.ca/travelling/children/consent-letter)
@@ -68,16 +68,17 @@ date.
 
 ### The XFA engine in this repository
 
-A fresh blank-form render check on 2026-10-16, after the image, table, scripting,
-formatting, pagination and dialog changes, rendered all 129 forms without a failed
-render. 119 forms logged no script errors. The remaining 10 logged 26 error
-occurrences, including repeated calculation passes.
+A blank-form render check on 2026-10-19 rendered all 129 forms without a failed
+render. 125 forms logged no script errors. The remaining 4 logged 15 error
+occurrences, counting repeated calculation passes, and each of them comes from a
+mistake in the form itself (below), which Acrobat would report too. No form reports
+an unsupported image.
 
 | Department | Kind | Forms rendered | No script errors | Script error occurrences |
 |---|---|---|---|---|
 | Global Affairs Canada | Dynamic | 1 | 1 | 0 |
 | IRCC | Dynamic | 14 | 14 | 0 |
-| CRA | Dynamic | 90 | 81 | 20 |
+| CRA | Dynamic | 90 | 87 | 9 |
 | CRA | Static | 6 | 6 | 0 |
 | Service Canada | Static | 10 | 10 | 0 |
 | IRCC | Static | 4 | 4 | 0 |
@@ -85,45 +86,32 @@ occurrences, including repeated calculation passes.
 
 These are rendering and script-execution checks on blank forms. Only the consent
 letter has been verified end to end by filling, generating, printing, saving and
-reopening it. No script errors does not establish that a form's calculations,
+reopening it, including switching its language back and forth with every section
+filled in. No script errors does not establish that a form's calculations,
 validation, data binding or barcodes produce correct submission-ready output.
 The patched viewer continues to use ordinary PDF pages for static XFA forms;
 this check explicitly renders those forms through the engine too.
 
-The previous results described PNG images, table layout, FormCalc and barcodes as
-unimplemented. Those features now have implementations and synthetic tests. The
-current render logs report no unsupported images in the 105 dynamic forms.
-Five static forms still log image decoding failures: TIFF in the four passport
-forms and JPEG in ISP-1300. Feature coverage and correctness still need tests
-with filled forms.
+Forms still reporting script errors, all because of the form:
 
-Forms still reporting script errors:
-
-| File | Pages | Error occurrences |
+| File | Error occurrences | Cause |
 |---|---|---|
-| `inns3-fill-19e.pdf` | 1 | 2 |
-| `rc243-fill-26e.pdf` | 5 | 6 |
-| `t1000-3-fill-21e.pdf` | 2 | 1 |
-| `t1235-fill-20e.pdf` | 2 | 1 |
-| `t1236-fill-19e.pdf` | 2 | 3 |
-| `t1441-fill-24e.pdf` | 3 | 1 |
-| `t3ao-fill-23e.pdf` | 1 | 2 |
-| `t3inns3-fill-23e.pdf` | 1 | 2 |
-| `t7dr-fill-19e.pdf` | 1 | 2 |
-| `pptc040.pdf` | 10 | 6 |
+| `rc243-fill-26e.pdf` | 6 | Calculations read `details.totals.numTotal`; the table has no `details` subform (`totals` is its child). |
+| `t1000-3-fill-21e.pdf` | 1 | `docReady` reads `form1.Page1.Person9_sub`; `Person9_sub` is a sibling of `Page1`, not its child. |
+| `t1236-fill-19e.pdf` | 2 | A `ready` script sets `SectionA_A1_Charity_BN.h`; no object has that name (the field is `Charity_BN`). |
+| `pptc040.pdf` | 6 | Barcode fields read `CurrentAddress.Prov` and `MailingAddress.Prov`; `Prov` remains only in the `…-Old-With-Prov` copies of those subforms. |
 
-The logs identify several follow-up areas: Acrobat document APIs used by
-accessibility helpers (`dynamicXFAForm`, `getField` and field `userName`), default
-caption/value nodes used by paper-barcode scripts, and unresolved form-node
-references in the TFSA return, T1000-3 and a passport form. Investigate these
-against the source templates and synthetic reproductions before changing lookup
-rules or claiming the affected forms work.
+The 483 errors earlier logs showed for four CRA forms came from `event.target`, which
+in Acrobat is the Doc object; CRA's accessibility helpers test its `dynamicXFAForm`.
+Four CRA paper-forms barcodes (T7DR, INNS3, T3AO, T3INNS3) now encode their content
+through data nodes and manifests. The images earlier logs called unsupported are
+links to files on the form author's computer (`..\..\..\Graphics\...`); embedded
+images all decode.
 
-Broader implementation gaps include explicit `dataRef` bindings and synchronization
-with the data DOM, some FormCalc functions and predicates, time picture clauses,
-embedded fonts and linked/SVG images. During interactive editing Evince now asks
-script questions and accepts prompt text; scripts run before a view is attached,
-and command-line rendering, retain the engine's automatic fallback answers.
+Remaining gaps, described in `KNOWN_ISSUES.md`: `dataRef` bindings with predicates,
+the form's own typefaces (text uses the standard fonts and, for other characters,
+similar system fonts), SVG images, and automatic answers to script questions when
+no viewer is attached.
 
 `results.tsv` contains the current per-form results for all 129 forms, produced by
 `scripts/check-corpus.sh`. The downloaded files are checked against `forms.tsv`.
