@@ -1,0 +1,52 @@
+From 5adc192f9d4abc3be324642a32fc608f0601799f Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 15:21:35 -0700
+Subject: [PATCH] XFA: Use embedded copies of linked images; report linked
+ images
+
+An image with an href was never drawn, even with an embedded copy of the
+image. Use the embedded data whenever there is some. Linked images
+without it are still not loaded, since a document must not read files
+or reach the network; they referred to files on the form author's
+computer in every corpus form that had them. Report them as linked
+rather than as an unsupported image format.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ poppler/XFAWriter.cc | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index 53d1af8..a5fa328 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -173,10 +173,12 @@ std::string base64Decode(const std::string &in)
+ 
+ std::optional<XFAImage> decodeImage(const XFANode *imageNode)
+ {
+-    if (imageNode->getAttr("href")) {
+-        return std::nullopt; // external images are not supported
+-    }
++    // Linked images are not loaded: a document must not read files or
++    // reach the network. An embedded copy is used when there is one.
+     const std::string text = imageNode->textContent();
++    if (text.find_first_not_of(" \t\r\n") == std::string::npos) {
++        return std::nullopt;
++    }
+     XFAImage img;
+     if (!XFADecodeImage(imageNode->getAttr("transferEncoding", "base64") == "base64" ? base64Decode(text) : text, img)) {
+         return std::nullopt;
+@@ -473,7 +475,9 @@ void Writer::drawImage(const XFANode *imageNode, double x, double y, double w, d
+             // Without a resolution, pixels are taken to be screen pixels at 96 per inch.
+             io = ImageObject { pdf.addStream(dict, img->data), "Im" + std::to_string(imageCache.size()), img->width * 72.0 / (img->dpiX > 0 ? img->dpiX : 96), img->height * 72.0 / (img->dpiY > 0 ? img->dpiY : 96) };
+         } else {
+-            form->logMessage("unsupported image " + imageNode->getAttr("contentType", "?"));
++            const std::string *href = imageNode->getAttr("href");
++            const bool linked = href && imageNode->textContent().find_first_not_of(" \t\r\n") == std::string::npos;
++            form->logMessage(linked ? "linked image not loaded: " + *href : "unsupported image " + imageNode->getAttr("contentType", "?"));
+         }
+         it = imageCache.emplace(key, io).first;
+     }
+-- 
+2.43.0
+

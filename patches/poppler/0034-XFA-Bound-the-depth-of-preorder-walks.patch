@@ -1,0 +1,41 @@
+From c1675a84a638ca55be5a193331d130221516fbff Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 15:21:11 -0700
+Subject: [PATCH] XFA: Bound the depth of preorder walks
+
+preorder() collects the containers of a subtree recursively, as when a
+global field shares its value with all fields of its name. Like the
+other walks of the node tree, it must not trust the tree's shape: a
+script can nest subforms tens of thousands deep and then set a global
+field, overflowing the stack. Stop descending at XFANodeMaxDepth.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ poppler/XFAForm.cc | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 2c21e46..44f0dba 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -336,12 +336,15 @@ int initialCount(const XFANode *templ)
+     return std::max(0, occurAttr(templ, "initial", min));
+ }
+ 
+-void preorder(XFANode *node, std::vector<int> &serials)
++void preorder(XFANode *node, std::vector<int> &serials, int depth = 0)
+ {
+     serials.push_back(node->getSerial());
++    if (depth >= XFANodeMaxDepth) {
++        return;
++    }
+     for (const auto &c : node->getChildren()) {
+         if (!c->isText() && (c->isContainer() || c->getClassName() == "pageSet")) {
+-            preorder(c.get(), serials);
++            preorder(c.get(), serials, depth + 1);
+         }
+     }
+ }
+-- 
+2.43.0
+

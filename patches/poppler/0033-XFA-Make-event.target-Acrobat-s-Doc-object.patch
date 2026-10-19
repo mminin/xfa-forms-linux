@@ -1,0 +1,109 @@
+From 3ae22ce2ab560774d9cb2f1b591aea079df63ad3 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 14:52:45 -0700
+Subject: [PATCH] XFA: Make event.target Acrobat's Doc object
+
+In Acrobat, event.target is the Doc object, and forms test its
+dynamicXFAForm property to choose between XFA and AcroForm ways of
+doing things. It was the XFA object of the event, so CRA forms took the
+AcroForm way, called event.target.getField(), which does not exist, and
+their docReady scripts stopped before adding the rows of their tables:
+the directors of T1235 and the grantees of T1441 were missing.
+
+Give event.target the members of a Doc for a dynamic form, falling back
+to those of the XFA object, so xfa.event.target.name still works. This
+removes 483 script errors from the corpus.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c | 31 +++++++++++++++++++++++++++++++
+ poppler/XFAScript.cc   | 21 ++++++++++++++++++++-
+ 2 files changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 89d8877..5c0b891 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -1180,6 +1180,36 @@ static void test_default_ui(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* As in Acrobat, event.target is the Doc, whose dynamicXFAForm forms test
++ * to choose how to work; other properties are those of the XFA object. */
++static void test_event_target(void)
++{
++    const char *xml = "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                      "<subform name=\"form1\" layout=\"tb\"><pageSet><pageArea name=\"Page1\">"
++                      "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                      "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
++                      "<field name=\"out\" w=\"6in\" h=\"0.3in\" access=\"nonInteractive\"><ui><textEdit/></ui>"
++                      "<event activity=\"initialize\"><script contentType=\"application/x-javascript\">"
++                      "this.rawValue = \"target=\" + event.target.dynamicXFAForm + \"|\" + xfa.event.target.name + \"|\" + event.target.zoom;"
++                      "</script></event></field></subform></template>";
++    GBytes *bytes = build_pdf_from(xml);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    char *text = page_text(rendered);
++    if (!strstr(text, "target=")) {
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        g_assert_nonnull(strstr(text, "target=true|out|100"));
++    }
++    g_free(text);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ /* SOM predicates choose among the occurrences of an object: .[FormCalc] in
+  * FormCalc and JavaScript, .(JavaScript) in JavaScript. */
+ static void test_som_predicates(void)
+@@ -1325,5 +1355,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/deep-script-tree", test_deep_script_tree);
+     g_test_add_func("/xfa/locales", test_locales);
+     g_test_add_func("/xfa/som-predicates", test_som_predicates);
++    g_test_add_func("/xfa/event-target", test_event_target);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 46c47ea..090de4a 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -416,11 +416,30 @@ function scopeFor(id) {
+ }
+ 
+ // Scripts outside events, such as script objects, see an empty event.
++// Acrobat's Doc object, which is what event.target is in Acrobat. Forms test
++// dynamicXFAForm to choose between XFA and AcroForm ways of doing things;
++// this engine renders forms dynamically, so it is true.
++var acroDoc = {
++    dynamicXFAForm: true, zoom: 100, zoomType: "NoVary", dirty: false, external: false,
++    get numPages() { return N.pageCount(); },
++    getField: function () { return null; },
++    calculateNow: function () { N.runCalcs(); },
++    resetForm: function () { N.resetData(null); }
++};
++// The target of an event: the Doc's members, then the XFA object's.
++function eventTarget(id) {
++    var node = wrap(id);
++    return new Proxy(acroDoc, {
++        get: function (t, p) { return p in t ? t[p] : node ? node[p] : undefined; },
++        set: function (t, p, v) { if (p in t) t[p] = v; else if (node) node[p] = v; return true; },
++        has: function (t, p) { return p in t || (node !== null && p in node); }
++    });
++}
+ function makeEvent(ev) {
+     ev = ev || { activity: "", newText: "", prevText: "", change: "", target: null };
+     return {
+         name: ev.activity, newText: ev.newText, prevText: ev.prevText, change: ev.change, fullText: ev.newText,
+-        target: wrap(ev.target), selStart: 0, selEnd: 0, modifier: false, shift: false, keyDown: false,
++        target: eventTarget(ev.target), selStart: 0, selEnd: 0, modifier: false, shift: false, keyDown: false,
+         commitKey: 0, reenter: false, cancelAction: false, soapFaultCode: 0, soapFaultString: "", rc: true, value: ev.newText
+     };
+ }
+-- 
+2.43.0
+

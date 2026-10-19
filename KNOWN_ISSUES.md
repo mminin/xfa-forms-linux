@@ -38,21 +38,23 @@ Carried over from the prior session and still not done:
 These are design limitations, not regressions. Each is a real gap a strict XFA form
 could hit; listed so nobody assumes full coverage.
 
-### 7. Data binding is simplified — P2
-Values are matched to data by name. `dataRef`/`bind` expressions are ignored, and the
-form's values are held in the form tree, not written through to the data DOM the way
-a strict implementation would. **Why:** name-matching covered the corpus; `dataRef`
-forms will bind the wrong nodes or not at all.
+### 7. `dataRef` bindings with predicates or expressions — P3
+Bindings by reference follow simple paths (`$.a.b`, `$record.a[2]`, `$data.a`).
+References with predicates or `[*]` bind nothing. **Why:** none of the 129 corpus
+forms uses `dataRef` at all; the simple paths cover what Designer writes.
 
-### 9. Fonts are the 14 standard PDF fonts — P3
-No embedding; narrow/black faces are approximated with horizontal scaling. **Why:**
-embedding is a large addition. Glyph coverage and metrics will differ from Acrobat for
-non-Latin text.
+### 9. Fonts: the form's typefaces are not looked for — P3
+Text uses the standard 14 fonts, and a similar system font only for characters they
+lack. A form asking for Myriad Pro gets Helvetica even where Myriad Pro is installed.
+**Why:** metrics of the standard fonts are known everywhere, so layout does not depend
+on what the reader has installed. Chinese text embeds the subroutines of its CJK font
+(about 1.5 MB); subsetting CFF subroutines would need a Type 2 charstring interpreter.
 
-### 10. Images: no SVG, no external/linked images — P3
-JPEG/PNG/GIF/BMP/TIFF data is drawn; SVG and `href`-linked images are not. 5 corpus
-forms still show unsupported images (see `corpus/README.md`). **Why:** SVG needs a
-rasteriser; linked images need fetching, which is a security decision of its own.
+### 10. Images: SVG and linked images — P3
+SVG images are not drawn (no corpus form has one). Linked images (`href` without an
+embedded copy) are not loaded by design, as a document must not read local files or the
+network; in the corpus they all point to files on the form author's computer, which
+Acrobat cannot load either.
 
 ### 11. Non-interactive contexts auto-answer scripts — P3
 Scripts that run before a view is attached, and all command-line rendering, answer
@@ -89,5 +91,17 @@ lay it out the same way. Left as-is pending a counter-example.
   `Eval()` and `Ref()` functions, checked against the examples of Adobe's FormCalc
   reference (`tools/qa/test_formcalc.py`) (poppler 0031), and SOM predicates
   (poppler 0032).
+- `event.target` is Acrobat's Doc object: CRA forms tested `dynamicXFAForm`, took
+  their AcroForm path and stopped before adding table rows; 483 script errors gone
+  (poppler 0033).
+- Preorder walks were not bounded in depth; setting a global field in a deep
+  script-built tree crashed (poppler 0034).
+- Data binding: values reach the data DOM, `dataNode` is real, `dataRef` simple paths,
+  occurrences from data, `manifest.evaluate()`, plain-call `this`. The consent letter's
+  language switch lost half the answers (conditional sections) each time; it now
+  keeps them all. Four CRA paper-forms barcodes work (poppler 0035).
+- Embedded copies of linked images are used (poppler 0036).
+- Characters the standard fonts lack became `?`; 13 corpus forms had `?` for bullets
+  and arrows, and any Cyrillic, Greek, Chinese or Polish name was lost (poppler 0037).
 
 See the commit messages of those patches for detail.

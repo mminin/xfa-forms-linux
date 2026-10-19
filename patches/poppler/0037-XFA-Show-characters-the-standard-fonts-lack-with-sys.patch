@@ -1,0 +1,866 @@
+From efbbf783a405137a4b180116b0f1e984fd318f53 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 15:29:48 -0700
+Subject: [PATCH] XFA: Show characters the standard fonts lack with system
+ fonts
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Text was drawn only with the standard 14 fonts, in WinAnsiEncoding, so
+every other character became a question mark: Cyrillic, Greek, Chinese
+and most of Latin Extended, such as the Ł of a Polish name, but also the
+bullets and arrows of 13 corpus forms, such as the "►" after "Social
+insurance number" in IMM 5444.
+
+For such characters, find a system font the way poppler does for
+AcroForm fields, with GlobalParams::findSystemFontFileForUChar() and a
+standard font to emulate, so that sans, serif, bold and italic text get
+a similar face. Measure them with its metrics through FreeType and draw
+them with a Type0 font, Identity-H encoding and a ToUnicode map, so that
+text can still be copied.
+
+Fonts are embedded with the glyphs of other characters emptied, which
+keeps glyph ids while their outlines compress to almost nothing, and
+without tables PDF does not use. One face is taken out of font
+collections. Two Chinese characters made a 13 MB file and a 1.9 second
+render with the whole font; they now take 1.6 MB, most of it the
+subroutines the glyphs may call.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt         |   1 +
+ glib/tests/check_xfa.c |  29 +++
+ poppler/XFAFonts.cc    | 440 +++++++++++++++++++++++++++++++++++++++++
+ poppler/XFAFonts.h     |  52 +++++
+ poppler/XFAText.cc     |  27 ++-
+ poppler/XFAText.h      |   2 +
+ poppler/XFAWriter.cc   | 129 +++++++++++-
+ 7 files changed, 671 insertions(+), 9 deletions(-)
+ create mode 100644 poppler/XFAFonts.cc
+ create mode 100644 poppler/XFAFonts.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index cc3678e..147b16a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -459,6 +459,7 @@ set(poppler_SRCS
+   poppler/Form.cc
+   poppler/XFAForm.cc
+   poppler/XFAFormCalc.cc
++  poppler/XFAFonts.cc
+   poppler/XFAImage.cc
+   poppler/XFAPicture.cc
+   poppler/XFALayout.cc
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 9dda6f9..c1b5982 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -1180,6 +1180,34 @@ static void test_default_ui(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* Characters the standard fonts lack come from an embedded system font
++ * instead of turning into question marks. */
++static void test_unicode_text(void)
++{
++    const char *xml = "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                      "<subform name=\"form1\" layout=\"tb\"><pageSet><pageArea name=\"Page1\">"
++                      "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                      "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
++                      "<draw w=\"6in\" h=\"0.4in\"><font typeface=\"Myriad Pro\"/><value><text>Names: \xc5\x81ukasz \xd0\x98\xd0\xb2\xd0\xb0\xd0\xbd Zo\xc3\xab</text></value></draw>"
++                      "</subform></template>";
++    GBytes *bytes = build_pdf_from(xml);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    char *text = page_text(rendered);
++    if (strstr(text, "????")) {
++        g_test_skip("no system font has Cyrillic");
++    } else {
++        g_assert_nonnull(strstr(text, "Names: \xc5\x81ukasz \xd0\x98\xd0\xb2\xd0\xb0\xd0\xbd Zo\xc3\xab"));
++    }
++    g_free(text);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ /* Merging data adds the occurrences of repeatable subforms that the data
+  * has groups for; field values reach their data nodes, which manifests
+  * reference; functions a script calls plainly see its object as this. This
+@@ -1400,5 +1428,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/som-predicates", test_som_predicates);
+     g_test_add_func("/xfa/event-target", test_event_target);
+     g_test_add_func("/xfa/data-binding", test_data_binding);
++    g_test_add_func("/xfa/unicode-text", test_unicode_text);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAFonts.cc b/poppler/XFAFonts.cc
+new file mode 100644
+index 0000000..621b302
+--- /dev/null
++++ b/poppler/XFAFonts.cc
+@@ -0,0 +1,440 @@
++//========================================================================
++//
++// XFAFonts.cc
++//
++// This file is licensed under the GPLv2 or later
++//
++// Copyright (C) 2026 mminin <mminin2010@gmail.com>
++//
++//========================================================================
++
++#include <config.h>
++
++#include "XFAFonts.h"
++#include "XFAText.h"
++
++#include "Dict.h"
++#include "GfxFont.h"
++#include "GlobalParams.h"
++#include "Object.h"
++#include "goo/ft_utils.h"
++
++#include <ft2build.h>
++#include FT_FREETYPE_H
++#include FT_TRUETYPE_TABLES_H
++
++#include <algorithm>
++#include <cctype>
++#include <cstring>
++#include <fstream>
++#include <iterator>
++#include <map>
++#include <memory>
++#include <mutex>
++#include <optional>
++
++struct XFAFallbackFace
++{
++    std::string path;
++    int index = 0;
++    std::string family, style;
++    FT_Face face = nullptr;
++    std::string sfnt; // the face's font file, read when first embedded
++};
++
++namespace {
++
++// Faces are kept for the life of the process: what fontconfig found for a
++// character does not change while poppler runs.
++struct Cache
++{
++    std::mutex mutex;
++    FT_Library library = nullptr;
++    bool libraryFailed = false;
++    std::map<std::pair<std::string, int>, std::unique_ptr<XFAFallbackFace>> faces;
++    std::map<std::pair<unsigned int, int>, const XFAFallbackFace *> byChar;
++    std::map<int, std::unique_ptr<GfxFont>> emulated;
++};
++
++Cache &cache()
++{
++    static Cache c;
++    return c;
++}
++
++// A standard font, for GlobalParams to find a system font similar to it.
++const GfxFont *emulatedFont(Cache &c, int standardFont)
++{
++    auto it = c.emulated.find(standardFont);
++    if (it == c.emulated.end()) {
++        Dict dict(static_cast<XRef *>(nullptr));
++        dict.add("Type", Object::name("Font"));
++        dict.add("Subtype", Object::name("Type1"));
++        dict.add("BaseFont", Object::name(XFAStandardFontName(standardFont)));
++        it = c.emulated.emplace(standardFont, GfxFont::makeFont(nullptr, "F", Ref::INVALID(), dict)).first;
++    }
++    return it->second.get();
++}
++
++unsigned int u16(const std::string &d, size_t at)
++{
++    return at + 2 <= d.size() ? (static_cast<unsigned char>(d[at]) << 8) | static_cast<unsigned char>(d[at + 1]) : 0;
++}
++
++unsigned int u32(const std::string &d, size_t at)
++{
++    return (u16(d, at) << 16) | u16(d, at + 2);
++}
++
++void put16(std::string &d, unsigned int v)
++{
++    d += static_cast<char>((v >> 8) & 0xFF);
++    d += static_cast<char>(v & 0xFF);
++}
++
++void put32(std::string &d, unsigned int v)
++{
++    put16(d, v >> 16);
++    put16(d, v & 0xFFFF);
++}
++
++// One face of a font file: the file itself, or the face out of a TrueType
++// or OpenType collection, as PDF cannot embed collections.
++std::string sfntOf(const std::string &file, int index)
++{
++    if (file.compare(0, 4, "ttcf") != 0) {
++        return file;
++    }
++    const unsigned int count = u32(file, 8);
++    if (index < 0 || static_cast<unsigned int>(index) >= count) {
++        return {};
++    }
++    const size_t header = u32(file, 12 + 4 * static_cast<size_t>(index));
++    const unsigned int numTables = u16(file, header + 4);
++    if (header + 12 + 16 * static_cast<size_t>(numTables) > file.size()) {
++        return {};
++    }
++    std::string out = file.substr(header, 12);
++    size_t offset = 12 + 16 * static_cast<size_t>(numTables);
++    std::string data;
++    for (unsigned int t = 0; t < numTables; ++t) {
++        const size_t rec = header + 12 + 16 * static_cast<size_t>(t);
++        const size_t from = u32(file, rec + 8), length = u32(file, rec + 12);
++        if (from > file.size() || length > file.size() - from) {
++            return {};
++        }
++        out += file.substr(rec, 8); // tag and checksum
++        put32(out, static_cast<unsigned int>(offset + data.size()));
++        put32(out, static_cast<unsigned int>(length));
++        data += file.substr(from, length);
++        data.resize((data.size() + 3) & ~static_cast<size_t>(3), '\0');
++    }
++    return out + data;
++}
++
++// The offset and length of a table of an sfnt, or nothing.
++std::optional<std::pair<size_t, size_t>> findTable(const std::string &sfnt, const char *tag)
++{
++    const unsigned int numTables = u16(sfnt, 4);
++    for (unsigned int t = 0; t < numTables; ++t) {
++        const size_t rec = 12 + 16 * static_cast<size_t>(t);
++        if (rec + 16 <= sfnt.size() && sfnt.compare(rec, 4, tag, 4) == 0) {
++            const size_t from = u32(sfnt, rec + 8), length = u32(sfnt, rec + 12);
++            if (from <= sfnt.size() && length <= sfnt.size() - from) {
++                return std::make_pair(from, length);
++            }
++        }
++    }
++    return std::nullopt;
++}
++
++bool hasTable(const std::string &sfnt, const char *tag)
++{
++    return findTable(sfnt, tag).has_value();
++}
++
++// Empties the TrueType glyphs not in keep, and those composite glyphs do
++// not use: a glyph of no contours.
++void emptyTrueTypeGlyphs(std::string &sfnt, std::set<unsigned int> keep)
++{
++    const auto head = findTable(sfnt, "head"), maxp = findTable(sfnt, "maxp"), loca = findTable(sfnt, "loca"), glyf = findTable(sfnt, "glyf");
++    if (!head || !maxp || !loca || !glyf || head->second < 54 || maxp->second < 6) {
++        return;
++    }
++    const bool longOffsets = u16(sfnt, head->first + 50) == 1;
++    const unsigned int numGlyphs = u16(sfnt, maxp->first + 4);
++    const auto offset = [&](unsigned int g) -> size_t { return longOffsets ? u32(sfnt, loca->first + 4 * static_cast<size_t>(g)) : 2 * static_cast<size_t>(u16(sfnt, loca->first + 2 * static_cast<size_t>(g))); };
++    if (loca->second < (longOffsets ? 4 : 2) * (static_cast<size_t>(numGlyphs) + 1)) {
++        return;
++    }
++    keep.insert(0);
++    // Components of composite glyphs, recursively.
++    std::vector<unsigned int> todo(keep.begin(), keep.end());
++    while (!todo.empty()) {
++        const unsigned int g = todo.back();
++        todo.pop_back();
++        if (g >= numGlyphs) {
++            continue;
++        }
++        const size_t start = offset(g), end = offset(g + 1);
++        if (end <= start || end > glyf->second || static_cast<short>(u16(sfnt, glyf->first + start)) >= 0) {
++            continue;
++        }
++        for (size_t at = glyf->first + start + 10; at + 4 <= glyf->first + end;) {
++            const unsigned int flags = u16(sfnt, at), component = u16(sfnt, at + 2);
++            if (keep.insert(component).second) {
++                todo.push_back(component);
++            }
++            at += 4 + ((flags & 1) ? 4 : 2); // ARG_1_AND_2_ARE_WORDS
++            at += (flags & 8) ? 2 : (flags & 0x40) ? 4 : (flags & 0x80) ? 8 : 0; // scales
++            if (!(flags & 0x20)) { // MORE_COMPONENTS
++                break;
++            }
++        }
++    }
++    for (unsigned int g = 0; g < numGlyphs; ++g) {
++        const size_t start = offset(g), end = std::min(offset(g + 1), glyf->second);
++        if (!keep.contains(g) && end > start) {
++            std::fill(sfnt.begin() + glyf->first + start, sfnt.begin() + glyf->first + end, '\0');
++        }
++    }
++}
++
++// An INDEX of a CFF table at at: the offsets of its items, relative to the
++// table, and where the INDEX ends.
++std::optional<std::pair<std::vector<size_t>, size_t>> cffIndex(const std::string &cff, size_t at)
++{
++    if (at + 2 > cff.size()) {
++        return std::nullopt;
++    }
++    const unsigned int count = u16(cff, at);
++    if (count == 0) {
++        return std::make_pair(std::vector<size_t> {}, at + 2);
++    }
++    const unsigned int offSize = static_cast<unsigned char>(cff[at + 2]);
++    if (offSize < 1 || offSize > 4 || at + 3 + (static_cast<size_t>(count) + 1) * offSize > cff.size()) {
++        return std::nullopt;
++    }
++    const size_t base = at + 2 + (static_cast<size_t>(count) + 1) * offSize; // offsets count from base + 1
++    std::vector<size_t> offsets;
++    for (unsigned int i = 0; i <= count; ++i) {
++        size_t v = 0;
++        for (unsigned int k = 0; k < offSize; ++k) {
++            v = (v << 8) | static_cast<unsigned char>(cff[at + 3 + static_cast<size_t>(i) * offSize + k]);
++        }
++        if (v < 1 || base + v > cff.size()) {
++            return std::nullopt;
++        }
++        offsets.push_back(base + v);
++    }
++    return std::make_pair(offsets, offsets.back());
++}
++
++// Empties the CFF charstrings of the glyphs not in keep: an endchar, then
++// bytes that are never read.
++void emptyCffGlyphs(std::string &sfnt, std::set<unsigned int> keep)
++{
++    const auto table = findTable(sfnt, "CFF ");
++    if (!table || table->second < 4) {
++        return;
++    }
++    std::string cff = sfnt.substr(table->first, table->second);
++    const auto names = cffIndex(cff, static_cast<unsigned char>(cff[2]));
++    const auto tops = names ? cffIndex(cff, names->second) : std::nullopt;
++    if (!tops || tops->first.size() < 2) {
++        return;
++    }
++    // The CharStrings operand of the first Top DICT.
++    std::vector<long> operands;
++    std::optional<size_t> charStrings;
++    for (size_t at = tops->first[0]; at < tops->first[1];) {
++        const unsigned int b = static_cast<unsigned char>(cff[at]);
++        if (b <= 21) {
++            if (b == 17 && !operands.empty()) {
++                charStrings = static_cast<size_t>(operands.back());
++            }
++            operands.clear();
++            at += b == 12 ? 2 : 1;
++        } else if (b == 28 && at + 2 < cff.size()) {
++            operands.push_back(static_cast<short>(u16(cff, at + 1)));
++            at += 3;
++        } else if (b == 29 && at + 4 < cff.size()) {
++            operands.push_back(static_cast<int>(u32(cff, at + 1)));
++            at += 5;
++        } else if (b == 30) {
++            for (++at; at < cff.size() && (static_cast<unsigned char>(cff[at]) & 0x0F) != 0x0F && (static_cast<unsigned char>(cff[at]) & 0xF0) != 0xF0; ++at) { }
++            ++at;
++            operands.push_back(0);
++        } else if (b >= 32 && b <= 246) {
++            operands.push_back(static_cast<long>(b) - 139);
++            ++at;
++        } else if (b >= 247 && b <= 254 && at + 1 < cff.size()) {
++            const long w = static_cast<unsigned char>(cff[at + 1]);
++            operands.push_back(b <= 250 ? (static_cast<long>(b) - 247) * 256 + w + 108 : -(static_cast<long>(b) - 251) * 256 - w - 108);
++            at += 2;
++        } else {
++            return;
++        }
++    }
++    const auto glyphs = charStrings ? cffIndex(cff, *charStrings) : std::nullopt;
++    if (!glyphs) {
++        return;
++    }
++    keep.insert(0);
++    for (size_t g = 0; g + 1 < glyphs->first.size(); ++g) {
++        const size_t start = glyphs->first[g], end = glyphs->first[g + 1];
++        if (!keep.contains(static_cast<unsigned int>(g)) && end > start) {
++            cff[start] = 14; // endchar
++            std::fill(cff.begin() + start + 1, cff.begin() + end, '\0');
++        }
++    }
++    sfnt.replace(table->first, table->second, cff);
++}
++
++// The sfnt without the tables PDF viewers do not use: layout, colour,
++// bitmaps, vertical metrics and signatures.
++std::string withoutUnusedTables(const std::string &sfnt)
++{
++    // Glyphs are chosen by id, so cmap goes too, and text is horizontal.
++    static const char *const kept[] = { "CFF ", "OS/2", "cvt ", "fpgm", "glyf", "head", "hhea", "hmtx", "loca", "maxp", "name", "post", "prep" };
++    const unsigned int numTables = u16(sfnt, 4);
++    std::vector<size_t> records;
++    for (unsigned int t = 0; t < numTables; ++t) {
++        const size_t rec = 12 + 16 * static_cast<size_t>(t);
++        if (rec + 16 <= sfnt.size() && std::ranges::any_of(kept, [&](const char *tag) { return sfnt.compare(rec, 4, tag, 4) == 0; })) {
++            records.push_back(rec);
++        }
++    }
++    std::string out = sfnt.substr(0, 4);
++    put16(out, static_cast<unsigned int>(records.size()));
++    out += sfnt.substr(6, 6); // searchRange and the rest, which readers recompute
++    std::string data;
++    const size_t dataStart = 12 + 16 * records.size();
++    for (size_t rec : records) {
++        const size_t from = u32(sfnt, rec + 8), length = u32(sfnt, rec + 12);
++        if (from > sfnt.size() || length > sfnt.size() - from) {
++            return sfnt;
++        }
++        out += sfnt.substr(rec, 8);
++        put32(out, static_cast<unsigned int>(dataStart + data.size()));
++        put32(out, static_cast<unsigned int>(length));
++        data += sfnt.substr(from, length);
++        data.resize((data.size() + 3) & ~static_cast<size_t>(3), '\0');
++    }
++    return out + data;
++}
++
++} // namespace
++
++const XFAFallbackFace *XFAFallbackFaceFor(unsigned int cp, int standardFont)
++{
++    Cache &c = cache();
++    const std::lock_guard<std::mutex> lock(c.mutex);
++    const auto key = std::make_pair(cp, standardFont);
++    if (const auto it = c.byChar.find(key); it != c.byChar.end()) {
++        return it->second;
++    }
++    const XFAFallbackFace *found = nullptr;
++    if (globalParams && !c.libraryFailed) {
++        if (!c.library && FT_Init_FreeType(&c.library)) {
++            c.library = nullptr;
++            c.libraryFailed = true;
++        }
++        const GfxFont *emulated = c.library ? emulatedFont(c, standardFont) : nullptr;
++        const UCharFontSearchResult res = emulated ? globalParams->findSystemFontFileForUChar(cp, *emulated) : UCharFontSearchResult();
++        if (!res.filepath.empty()) {
++            auto &slot = c.faces[{ res.filepath, res.faceIndex }];
++            if (!slot) {
++                slot = std::make_unique<XFAFallbackFace>();
++                slot->path = res.filepath;
++                slot->index = res.faceIndex;
++                slot->family = res.family;
++                slot->style = res.style;
++                if (ft_new_face_from_file(c.library, res.filepath.c_str(), res.faceIndex, &slot->face)) {
++                    slot->face = nullptr;
++                }
++                // Only TrueType and OpenType fonts can be embedded.
++                FT_ULong glyf = 0, cff = 0;
++                if (slot->face
++                    && (!FT_IS_SFNT(slot->face) || (FT_Load_Sfnt_Table(slot->face, FT_MAKE_TAG('g', 'l', 'y', 'f'), 0, nullptr, &glyf) != 0 && FT_Load_Sfnt_Table(slot->face, FT_MAKE_TAG('C', 'F', 'F', ' '), 0, nullptr, &cff) != 0))) {
++                    FT_Done_Face(slot->face);
++                    slot->face = nullptr;
++                }
++            }
++            if (slot->face && FT_Get_Char_Index(slot->face, cp) != 0) {
++                found = slot.get();
++            }
++        }
++    }
++    c.byChar[key] = found;
++    return found;
++}
++
++unsigned int XFAFallbackGlyph(const XFAFallbackFace *face, unsigned int cp)
++{
++    const std::lock_guard<std::mutex> lock(cache().mutex);
++    return face && face->face ? FT_Get_Char_Index(face->face, cp) : 0;
++}
++
++double XFAFallbackWidth(const XFAFallbackFace *face, unsigned int cp)
++{
++    const std::lock_guard<std::mutex> lock(cache().mutex);
++    if (!face || !face->face || face->face->units_per_EM == 0) {
++        return 0;
++    }
++    const FT_UInt glyph = FT_Get_Char_Index(face->face, cp);
++    if (FT_Load_Glyph(face->face, glyph, FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING)) {
++        return 0;
++    }
++    return face->face->glyph->advance.x * 1000.0 / face->face->units_per_EM;
++}
++
++XFAFallbackProgram XFAFallbackProgramOf(const XFAFallbackFace *face, const std::set<unsigned int> &glyphs)
++{
++    XFAFallbackProgram p;
++    if (!face || !face->face) {
++        return p;
++    }
++    {
++        const std::lock_guard<std::mutex> lock(cache().mutex);
++        const FT_Face f = face->face;
++        const double scale = f->units_per_EM ? 1000.0 / f->units_per_EM : 1;
++        p.bbox[0] = static_cast<int>(f->bbox.xMin * scale);
++        p.bbox[1] = static_cast<int>(f->bbox.yMin * scale);
++        p.bbox[2] = static_cast<int>(f->bbox.xMax * scale);
++        p.bbox[3] = static_cast<int>(f->bbox.yMax * scale);
++        p.ascent = static_cast<int>(f->ascender * scale);
++        p.descent = static_cast<int>(f->descender * scale);
++        p.italic = (f->style_flags & FT_STYLE_FLAG_ITALIC) != 0;
++        const char *psName = FT_Get_Postscript_Name(f);
++        p.name = psName ? psName : face->family + "-" + face->style;
++    }
++    std::erase_if(p.name, [](char ch) { return ch == ' ' || static_cast<unsigned char>(ch) < 0x21 || static_cast<unsigned char>(ch) > 0x7E; });
++    std::string lower = face->family;
++    for (char &ch : lower) {
++        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
++    }
++    p.serif = lower.find("serif") != std::string::npos && lower.find("sans") == std::string::npos;
++    std::string sfnt;
++    {
++        const std::lock_guard<std::mutex> lock(cache().mutex);
++        auto *mutableFace = const_cast<XFAFallbackFace *>(face);
++        if (mutableFace->sfnt.empty()) {
++            std::ifstream in(face->path, std::ios::binary);
++            const std::string file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
++            mutableFace->sfnt = withoutUnusedTables(sfntOf(file, face->index));
++        }
++        sfnt = face->sfnt;
++    }
++    if (sfnt.size() < 12 || (!hasTable(sfnt, "glyf") && !hasTable(sfnt, "CFF "))) {
++        return p;
++    }
++    p.trueType = hasTable(sfnt, "glyf");
++    if (p.trueType) {
++        emptyTrueTypeGlyphs(sfnt, glyphs);
++    } else {
++        emptyCffGlyphs(sfnt, glyphs);
++    }
++    p.data = std::move(sfnt);
++    return p;
++}
+diff --git a/poppler/XFAFonts.h b/poppler/XFAFonts.h
+new file mode 100644
+index 0000000..cb584c9
+--- /dev/null
++++ b/poppler/XFAFonts.h
+@@ -0,0 +1,52 @@
++//========================================================================
++//
++// XFAFonts.h
++//
++// Fonts for the text of XFA forms that the standard 14 fonts cannot show,
++// such as Cyrillic, Greek, Chinese or most of Latin Extended: system fonts
++// found the way poppler finds fonts for AcroForm fields, embedded as Type0
++// fonts with the Identity-H encoding.
++//
++// This file is licensed under the GPLv2 or later
++//
++// Copyright (C) 2026 mminin <mminin2010@gmail.com>
++//
++//========================================================================
++
++#ifndef XFAFONTS_H
++#define XFAFONTS_H
++
++#include <set>
++#include <string>
++#include <vector>
++
++// A face of a system font, loaded once per process.
++struct XFAFallbackFace;
++
++// Whether the standard fonts show code point cp, in WinAnsiEncoding.
++bool XFAWinAnsiShows(unsigned int cp);
++
++// The face to show cp with instead of standard font standardFont (see
++// XFAStandardFontName()), or nullptr when no system font has it.
++const XFAFallbackFace *XFAFallbackFaceFor(unsigned int cp, int standardFont);
++
++// The glyph of cp in face, and its advance in thousandths of an em.
++unsigned int XFAFallbackGlyph(const XFAFallbackFace *face, unsigned int cp);
++double XFAFallbackWidth(const XFAFallbackFace *face, unsigned int cp);
++
++// What embedding a face takes.
++struct XFAFallbackProgram
++{
++    std::string name; // PostScript-like name, without spaces
++    bool trueType = true; // glyf outlines (FontFile2), else CFF (FontFile3 OpenType)
++    int bbox[4] = { 0, 0, 0, 0 }; // in thousandths of an em
++    int ascent = 0, descent = 0;
++    bool serif = false, italic = false;
++    std::string data; // one face, out of a collection if need be; empty on failure
++};
++// The face's program with only the given glyphs drawn: the others are left
++// empty, so that glyph ids do not change, and tables PDF does not use are
++// dropped.
++XFAFallbackProgram XFAFallbackProgramOf(const XFAFallbackFace *face, const std::set<unsigned int> &glyphs);
++
++#endif
+diff --git a/poppler/XFAText.cc b/poppler/XFAText.cc
+index c31eb65..d90eacf 100644
+--- a/poppler/XFAText.cc
++++ b/poppler/XFAText.cc
+@@ -13,6 +13,7 @@
+ #include "XFAText.h"
+ 
+ #include "BuiltinFont.h"
++#include "XFAFonts.h"
+ 
+ #include <algorithm>
+ #include <cctype>
+@@ -183,22 +184,40 @@ double XFAFont::descent() const
+ 
+ double XFAFont::width(const std::string &utf8) const
+ {
+-    const BuiltinFont &bf = builtinFonts[standardFont()];
++    const int standard = standardFont();
++    const BuiltinFont &bf = builtinFonts[standard];
+     double w = 0;
+     int n = 0;
+     for (size_t i = 0; i < utf8.size();) {
+-        const int code = winAnsiCode(nextCodePoint(utf8, i));
+-        const char *glyph = winAnsiEncoding[code];
++        const unsigned int cp = nextCodePoint(utf8, i);
++        ++n;
++        // Characters the standard fonts lack come from a system font.
++        if (!XFAWinAnsiShows(cp)) {
++            if (const XFAFallbackFace *face = XFAFallbackFaceFor(cp, standard)) {
++                w += XFAFallbackWidth(face, cp);
++                continue;
++            }
++        }
++        const char *glyph = winAnsiEncoding[winAnsiCode(cp)];
+         unsigned short gw = 0;
+         if (!glyph || !bf.getWidth(glyph, &gw)) {
+             bf.getWidth("question", &gw);
+         }
+         w += gw;
+-        ++n;
+     }
+     return w * size / 1000.0 * hScale() / 100.0 + letterSpacing * n;
+ }
+ 
++bool XFAWinAnsiShows(unsigned int cp)
++{
++    return cp < 0x20 || cp == 0x7F || cp == '?' || cp == 0xFFFD || winAnsiCode(cp) != '?';
++}
++
++unsigned int XFANextCodePoint(const std::string &utf8, size_t &i)
++{
++    return nextCodePoint(utf8, i);
++}
++
+ const char *XFAStandardFontName(int index)
+ {
+     return builtinFonts[index].name.c_str();
+diff --git a/poppler/XFAText.h b/poppler/XFAText.h
+index 8b7a04c..e2b6b39 100644
+--- a/poppler/XFAText.h
++++ b/poppler/XFAText.h
+@@ -46,6 +46,8 @@ struct XFAFont
+ const char *XFAStandardFontName(int index);
+ // Converts UTF-8 to WinAnsiEncoding, the encoding we use for all fonts.
+ std::string XFAToWinAnsi(const std::string &utf8);
++// The code point of the UTF-8 character at i, moving i past it.
++unsigned int XFANextCodePoint(const std::string &utf8, size_t &i);
+ 
+ struct XFAPara
+ {
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index a5fa328..95955f9 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -12,6 +12,7 @@
+ 
+ #include "XFAWriter.h"
+ 
++#include "XFAFonts.h"
+ #include "XFAImage.h"
+ #include "XFAText.h"
+ 
+@@ -25,6 +26,7 @@
+ #include <map>
+ #include <memory>
+ #include <optional>
++#include <set>
+ 
+ namespace {
+ 
+@@ -318,6 +320,16 @@ private:
+         double width, height; // natural size in points
+     };
+     std::map<std::string, std::optional<ImageObject>> imageCache; // by content
++    // System fonts for characters the standard fonts lack, with the glyphs
++    // used and the characters they show.
++    struct FallbackFont
++    {
++        std::string resource;
++        int obj = 0;
++        std::map<unsigned int, unsigned int> glyphs;
++    };
++    std::map<const XFAFallbackFace *, FallbackFont> fallbackFonts;
++    void writeFallbackFonts();
+     std::vector<int> fields;
+     std::map<int, int> groupObjects; // exclGroup serial -> field object
+     std::map<int, std::vector<int>> groupKids;
+@@ -409,8 +421,7 @@ void Writer::drawBorder(const XFANode *border, double x, double y, double w, dou
+ 
+ void Writer::drawRun(const XFAPlacedRun &run, double x, double baseline)
+ {
+-    const std::string bytes = XFAToWinAnsi(run.text);
+-    std::string trimmed = bytes;
++    std::string trimmed = run.text;
+     while (!trimmed.empty() && trimmed.back() == ' ') {
+         trimmed.pop_back();
+     }
+@@ -418,11 +429,55 @@ void Writer::drawRun(const XFAPlacedRun &run, double x, double baseline)
+         return;
+     }
+     const XFAFont &f = run.font;
++    const int standard = f.standardFont();
+     std::string &ops = page->ops;
+     // Tz and Tc are graphics state, not reset by ET: always set them.
+-    ops += "BT\n/F" + std::to_string(f.standardFont()) + " " + num(f.size) + " Tf\n" + num(f.hScale()) + " Tz\n" + num(f.letterSpacing) + " Tc\n";
++    ops += "BT\n" + num(f.hScale()) + " Tz\n" + num(f.letterSpacing) + " Tc\n";
+     ops += color(f.color, false);
+-    ops += "1 0 0 1 " + num(x) + " " + num(py(baseline)) + " Tm\n" + pdfString(trimmed) + " Tj\nET\n";
++    ops += "1 0 0 1 " + num(x) + " " + num(py(baseline)) + " Tm\n";
++    // Pieces in a standard font, and pieces in a system font for the
++    // characters the standard fonts lack.
++    const XFAFallbackFace *current = nullptr;
++    std::string piece;
++    bool started = false;
++    const auto flush = [&]() {
++        if (piece.empty()) {
++            return;
++        }
++        if (current) {
++            ops += "/" + fallbackFonts[current].resource + " " + num(f.size) + " Tf\n<" + piece + "> Tj\n";
++        } else {
++            ops += "/F" + std::to_string(standard) + " " + num(f.size) + " Tf\n" + pdfString(XFAToWinAnsi(piece)) + " Tj\n";
++        }
++        piece.clear();
++    };
++    for (size_t i = 0; i < trimmed.size();) {
++        const size_t start = i;
++        const unsigned int cp = XFANextCodePoint(trimmed, i);
++        const XFAFallbackFace *face = XFAWinAnsiShows(cp) ? nullptr : XFAFallbackFaceFor(cp, standard);
++        if (!started || face != current) {
++            flush();
++            current = face;
++            started = true;
++            if (face && !fallbackFonts.contains(face)) {
++                FallbackFont &ff = fallbackFonts[face];
++                ff.resource = "U" + std::to_string(fallbackFonts.size() - 1);
++                ff.obj = pdf.reserve();
++            }
++        }
++        if (face) {
++            const unsigned int glyph = XFAFallbackGlyph(face, cp);
++            fallbackFonts[face].glyphs[glyph] = cp;
++            static const char hex[] = "0123456789ABCDEF";
++            for (int shift = 12; shift >= 0; shift -= 4) {
++                piece += hex[(glyph >> shift) & 0xF];
++            }
++        } else {
++            piece += trimmed.substr(start, i - start);
++        }
++    }
++    flush();
++    ops += "ET\n";
+     if (f.underline) {
+         const double w = f.width(run.text);
+         ops += "q\n" + color(f.color, true) + num(f.size * 0.05) + " w\n" + num(x) + " " + num(py(baseline + f.size * 0.12)) + " m " + num(x + w) + " " + num(py(baseline + f.size * 0.12)) + " l S\nQ\n";
+@@ -938,6 +993,64 @@ void Writer::drawItem(const XFALayoutItem &item)
+     }
+ }
+ 
++// Type0 fonts with Identity-H encoding, glyph ids as codes, whole font
++// programs as poppler embeds them for AcroForm fields, and ToUnicode maps
++// so that the text can be copied.
++void Writer::writeFallbackFonts()
++{
++    for (const auto &[face, ff] : fallbackFonts) {
++        std::set<unsigned int> used;
++        for (const auto &[glyph, cp] : ff.glyphs) {
++            used.insert(glyph);
++        }
++        const XFAFallbackProgram p = XFAFallbackProgramOf(face, used);
++        // The program could not be read after all: viewers substitute a font.
++        const std::string program = p.data.empty()
++                ? std::string()
++                : std::string(p.trueType ? " /FontFile2 " : " /FontFile3 ") + ref(pdf.addStream((p.trueType ? "/Length1 " + std::to_string(p.data.size()) : std::string("/Subtype /OpenType")) + " /Filter /FlateDecode", XFADeflate(p.data)));
++        const std::string name = pdfName(p.name.empty() ? std::string("XFAFallback") : p.name);
++        const int descriptor = pdf.add("<< /Type /FontDescriptor /FontName " + name + " /Flags " + std::to_string((p.serif ? 2 : 0) | 32 | (p.italic ? 64 : 0)) + " /FontBBox [" + std::to_string(p.bbox[0]) + " " + std::to_string(p.bbox[1])
++                                       + " " + std::to_string(p.bbox[2]) + " " + std::to_string(p.bbox[3]) + "] /ItalicAngle " + (p.italic ? "-12" : "0") + " /Ascent " + std::to_string(p.ascent) + " /Descent " + std::to_string(p.descent)
++                                       + " /CapHeight " + std::to_string(p.ascent) + " /StemV 80" + program + " >>");
++        std::string widths;
++        std::string cmap = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n"
++                           "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n";
++        std::vector<std::pair<unsigned int, unsigned int>> glyphs(ff.glyphs.begin(), ff.glyphs.end());
++        for (size_t start = 0; start < glyphs.size(); start += 100) {
++            const size_t end = std::min(glyphs.size(), start + 100);
++            cmap += std::to_string(end - start) + " beginbfchar\n";
++            for (size_t k = start; k < end; ++k) {
++                char code[8];
++                snprintf(code, sizeof(code), "%04X", glyphs[k].first & 0xFFFF);
++                std::string utf16;
++                unsigned int cp = glyphs[k].second;
++                char unit[8];
++                if (cp >= 0x10000) {
++                    cp -= 0x10000;
++                    snprintf(unit, sizeof(unit), "%04X", 0xD800 + (cp >> 10));
++                    utf16 += unit;
++                    snprintf(unit, sizeof(unit), "%04X", 0xDC00 + (cp & 0x3FF));
++                    utf16 += unit;
++                } else {
++                    snprintf(unit, sizeof(unit), "%04X", cp);
++                    utf16 += unit;
++                }
++                cmap += std::string("<") + code + "> <" + utf16 + ">\n";
++            }
++            cmap += "endbfchar\n";
++        }
++        cmap += "endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n";
++        for (const auto &[glyph, cp] : glyphs) {
++            widths += std::to_string(glyph) + " [" + num(XFAFallbackWidth(face, cp)) + "] ";
++        }
++        const int toUnicode = pdf.addStream("/Filter /FlateDecode", XFADeflate(cmap));
++        const int cidFont =
++                pdf.add("<< /Type /Font /Subtype " + std::string(p.trueType ? "/CIDFontType2" : "/CIDFontType0") + " /BaseFont " + name + " /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor "
++                        + ref(descriptor) + " /DW 1000 /W [" + widths + "]" + (p.trueType ? " /CIDToGIDMap /Identity" : "") + " >>");
++        pdf.set(ff.obj, "<< /Type /Font /Subtype /Type0 /BaseFont " + name + " /Encoding /Identity-H /DescendantFonts [" + ref(cidFont) + "] /ToUnicode " + ref(toUnicode) + " >>");
++    }
++}
++
+ std::string Writer::write(const XFALayoutResult &layout)
+ {
+     const int catalog = pdf.reserve();
+@@ -975,11 +1088,17 @@ std::string Writer::write(const XFALayoutResult &layout)
+             annots += ref(a) + " ";
+         }
+         const XFALayoutPage &lp = layout.pages[i];
++        std::string pageFonts = fontDict.substr(0, fontDict.size() - 2);
++        for (const auto &[face, ff] : fallbackFonts) {
++            pageFonts += " /" + ff.resource + " " + ref(ff.obj);
++        }
++        pageFonts += ">>";
+         pdf.set(page->pageObj,
+-                "<< /Type /Page /Parent " + ref(pagesObj) + " /MediaBox [0 0 " + num(lp.width) + " " + num(lp.height) + "] /Resources << /Font " + fontDict + (xobjects.empty() ? std::string() : " /XObject <<" + xobjects + " >>")
++                "<< /Type /Page /Parent " + ref(pagesObj) + " /MediaBox [0 0 " + num(lp.width) + " " + num(lp.height) + "] /Resources << /Font " + pageFonts + (xobjects.empty() ? std::string() : " /XObject <<" + xobjects + " >>")
+                         + " >> /Contents " + ref(contents) + (annots.empty() ? std::string() : " /Annots [" + annots + "]") + " >>");
+     }
+     page = nullptr;
++    writeFallbackFonts();
+ 
+     for (const auto &[serial, obj] : groupObjects) {
+         XFANode *group = form->lookupNode(serial);
+-- 
+2.43.0
+

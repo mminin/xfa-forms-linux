@@ -43,14 +43,15 @@ developer list of what still needs fixing and why is in [KNOWN_ISSUES.md](KNOWN_
 
 - FormCalc runs translated to JavaScript, with SOM predicates and all its built-in
   functions except the network ones (`Get()`, `Post()`, `Put()`), which forms may not use.
-- Data binding is simplified: values are matched to data by name, `dataRef` bindings
-  are ignored, and the form's values are kept in the form, not in the data DOM.
+- Data binding follows Acrobat for `once`, `global`, `none` and simple `dataRef`
+  references; `dataRef` with predicates or expressions is not supported.
 - Picture clauses take their names, symbols and default patterns from the form's
   locales, with English and French built in for forms that define none.
-- Fonts map onto the 14 standard PDF fonts, with horizontal scaling for narrow
-  and black faces. Nothing is embedded.
-- Images are drawn from JPEG, PNG, GIF, BMP and TIFF data; SVG and external
-  (linked) images are not.
+- Text uses the 14 standard PDF fonts, with horizontal scaling for narrow and black
+  faces; characters they lack come from a similar system font, embedded with only
+  the glyphs used. The form's own typefaces are not looked for.
+- Images are drawn from JPEG, PNG, GIF, BMP and TIFF data. SVG is not supported, and
+  linked images are not loaded, as a document must not read files or the network.
 - Scripts run before a view is attached, and command-line rendering, still answer
   questions automatically and use default prompt text. Interactive editing uses
   real dialogs. Remaining corpus script failures are listed in `corpus/README.md`.
@@ -178,6 +179,11 @@ Poppler (`patches/poppler/`, about 13,200 added lines):
 | 0030 | Locale symbols and default patterns from the form's localeSet; time and date-time pictures; `null{}`/`zero{}` only for null and zero values |
 | 0031 | The rest of FormCalc's built-in functions: financial, time, `Format()`, `Parse()`, `WordNum()`, units, `Eval()`, `Ref()` |
 | 0032 | SOM predicates: `Detail.[Qty > 2]` in FormCalc, `.(…)` in JavaScript |
+| 0033 | `event.target` is Acrobat's Doc object, so forms take their XFA code paths |
+| 0034 | Bound the depth of preorder walks of the form tree |
+| 0035 | Data binding as in Acrobat: values written to the data DOM, real `dataNode`, `dataRef`, occurrences from data, manifests |
+| 0036 | Use embedded copies of linked images; report linked images as such |
+| 0037 | Characters the standard fonts lack, drawn with embedded, subsetted system fonts |
 
 Evince (`patches/evince/`, about 1,150 added lines):
 
