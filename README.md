@@ -49,7 +49,10 @@ developer list of what still needs fixing and why is in [KNOWN_ISSUES.md](KNOWN_
   locales, with English and French built in for forms that define none.
 - Text uses the 14 standard PDF fonts, with horizontal scaling for narrow and black
   faces; characters they lack come from a similar system font, embedded with only
-  the glyphs used. The form's own typefaces are not looked for.
+  the glyphs used. The form's own typefaces are not looked for. Text sits 1–3 points
+  lower than in Acrobat, whose line metrics differ from the fonts' own.
+- Draws and fields can be rotated; rotated subforms, areas and exclusion groups
+  are not supported (no corpus form has one).
 - Images are drawn from JPEG, PNG, GIF, BMP and TIFF data. SVG is not supported, and
   linked images are not loaded, as a document must not read files or the network.
 - Scripts run before a view is attached, and command-line rendering, still answer
@@ -147,7 +150,7 @@ touching your desktop. See the comments in `run-session.sh` and `drive.py`.
 
 ## Patches
 
-Poppler (`patches/poppler/`, about 13,200 added lines):
+Poppler (`patches/poppler/`, about 15,100 added lines):
 
 | Patch | What it does |
 |---|---|
@@ -184,8 +187,10 @@ Poppler (`patches/poppler/`, about 13,200 added lines):
 | 0035 | Data binding as in Acrobat: values written to the data DOM, real `dataNode`, `dataRef`, occurrences from data, manifests |
 | 0036 | Use embedded copies of linked images; report linked images as such |
 | 0037 | Characters the standard fonts lack, drawn with embedded, subsetted system fonts |
+| 0038 | Rotated draws and fields (`rotate`), laid out and drawn turned |
+| 0039 | Keep the space above the first paragraph of text, as Acrobat does |
 
-Evince (`patches/evince/`, about 1,150 added lines):
+Evince (`patches/evince/`, about 1,500 added lines):
 
 | Patch | What it does |
 |---|---|
@@ -204,6 +209,7 @@ Evince (`patches/evince/`, about 1,150 added lines):
 | 0014 | Allocate form editors at least their minimum size, also while a form reloads |
 | 0015 | Show the saved value in a form editor that opened before the save, as when Tab returns to the same field |
 | 0016 | Keep allowed and blocked sites for form scripts across sessions, with a policy for other sites (settings `form-url-*`) |
+| 0017 | Ctrl+wheel zooms again: the view's scroll controller had no axes (upstream GTK 4 port) |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.

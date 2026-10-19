@@ -1,0 +1,333 @@
+From 155b6744d2ba0b65b07bf3cdf0a6dca597033fc8 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 16:06:02 -0700
+Subject: [PATCH] XFA: Turn rotated draws and fields
+
+The rotate attribute was ignored. Designer draws horizontal rules as
+vertical lines turned a quarter, and 75 of the 129 corpus forms have
+some: unturned, the underlines of CPT121's date fields became 42 mm
+vertical bars running down through the certification section, and the
+turned column headings of RC4649's tables spilled over its rows.
+
+Lay out a turned draw or field as the box it turns into, about its
+anchor point and counterclockwise, both in positioned containers and in
+flowed ones, and keep its text in one piece. Draw it unturned in a
+matrix that turns it onto that box. Widgets of turned fields cover the
+turned box and carry /MK /R, which poppler's appearances follow. Only
+multiples of 90 degrees are allowed, as XFA requires.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ poppler/XFALayout.cc | 73 ++++++++++++++++++++++++++++++++-----
+ poppler/XFALayout.h  |  8 ++++
+ poppler/XFAWriter.cc | 87 +++++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 156 insertions(+), 12 deletions(-)
+
+diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
+index 30a6ada..7bd8f6c 100644
+--- a/poppler/XFALayout.cc
++++ b/poppler/XFALayout.cc
+@@ -15,6 +15,8 @@
+ #include "XFAText.h"
+ 
+ #include <algorithm>
++#include <cmath>
++#include <cstdlib>
+ #include <deque>
+ #include <memory>
+ #include <numeric>
+@@ -35,6 +37,21 @@ XFAInsets XFAMarginOf(const XFANode *node)
+     return m;
+ }
+ 
++int XFARotationOf(const XFANode *node)
++{
++    const std::string *attr = node ? node->getAttr("rotate") : nullptr;
++    if (!attr) {
++        return 0;
++    }
++    const double degrees = std::strtod(attr->c_str(), nullptr);
++    if (!std::isfinite(degrees) || std::abs(degrees) > 1e6) {
++        return 0;
++    }
++    // Other angles are not allowed; take the nearest quarter turn.
++    const long quarters = std::lround(degrees / 90);
++    return static_cast<int>(((quarters % 4) + 4) % 4) * 90;
++}
++
+ static double checkButtonSize(const XFANode *field)
+ {
+     const XFANode *ui = field->firstChild("ui");
+@@ -152,6 +169,8 @@ struct Box
+     bool hasEnd = true;
+     // A row of a split left-to-right container, standing for its children.
+     bool fragmentRow = false;
++    // Turned draws and fields: x, y, w, h are the box they cover.
++    int rotate = 0;
+ 
+     // Pagination.
+     std::string breakTarget;
+@@ -209,20 +228,42 @@ bool isLayoutChild(const XFAForm *form, const XFANode *n)
+     return p != "hidden" && p != "inactive";
+ }
+ 
+-void anchorOffset(const XFANode *n, double w, double h, double *dx, double *dy)
++// Where the box b covers starts, left of and above the anchor point given
++// by the node's x and y. Turned objects turn about their anchor point.
++void anchorOffset(const Box &b, double *dx, double *dy)
+ {
+-    const std::string a = n->getAttr("anchorType", "topLeft");
+-    *dx = 0;
+-    *dy = 0;
++    const bool quarter = b.rotate == 90 || b.rotate == 270;
++    const double w = quarter ? b.h : b.w, h = quarter ? b.w : b.h;
++    const std::string a = b.node->getAttr("anchorType", "topLeft");
++    double ax = 0, ay = 0;
+     if (a.ends_with("Center")) {
+-        *dx = w / 2;
++        ax = w / 2;
+     } else if (a.ends_with("Right")) {
+-        *dx = w;
++        ax = w;
+     }
+     if (a.starts_with("middle")) {
+-        *dy = h / 2;
++        ay = h / 2;
+     } else if (a.starts_with("bottom")) {
+-        *dy = h;
++        ay = h;
++    }
++    // The unturned box spans -ax..w-ax and -ay..h-ay around the anchor;
++    // counterclockwise on the page, y pointing down.
++    switch (b.rotate) {
++    case 90: // (x, y) -> (y, -x)
++        *dx = ay;
++        *dy = w - ax;
++        break;
++    case 180: // (x, y) -> (-x, -y)
++        *dx = w - ax;
++        *dy = h - ay;
++        break;
++    case 270: // (x, y) -> (-y, x)
++        *dx = h - ay;
++        *dy = ax;
++        break;
++    default:
++        *dx = ax;
++        *dy = ay;
+     }
+ }
+ 
+@@ -302,6 +343,17 @@ Box Layouter::measure(XFANode *node, double availW, std::optional<double> forced
+     } else {
+         measureContainer(b, availW, forcedW);
+     }
++    // Turned draws and fields take the room of their turned box, wherever
++    // they are laid out, and their text stays in one piece.
++    if (cls == "draw" || cls == "field") {
++        b.rotate = XFARotationOf(node);
++        if (b.rotate == 90 || b.rotate == 270) {
++            std::swap(b.w, b.h);
++        }
++        if (b.rotate != 0) {
++            b.splittableText = false;
++        }
++    }
+ 
+     if (const XFANode *bb = node->firstChild("breakBefore")) {
+         const std::string type = bb->getAttr("targetType", "auto");
+@@ -411,7 +463,7 @@ void Layouter::measureContainer(Box &b, double availW, std::optional<double> for
+     } else if (b.layout != "row" && b.layout != "rl-row") {
+         for (Box &c : b.children) {
+             double dx, dy;
+-            anchorOffset(c.node, c.w, c.h, &dx, &dy);
++            anchorOffset(c, &dx, &dy);
+             c.x = m.left + XFAMeasureAttr(c.node, "x") - dx;
+             c.y = m.top + XFAMeasureAttr(c.node, "y") - dy;
+             contentW = std::max(contentW, c.x + c.w - m.left);
+@@ -973,7 +1025,7 @@ void Layouter::newPage(const XFANode *area)
+             }
+             Box b = measure(c.get(), cur.width);
+             double dx, dy;
+-            anchorOffset(c.get(), b.w, b.h, &dx, &dy);
++            anchorOffset(b, &dx, &dy);
+             place(b, XFAMeasureAttr(c.get(), "x") - dx, XFAMeasureAttr(c.get(), "y") - dy, cur, ps.index);
+         }
+     }
+@@ -1025,6 +1077,7 @@ void Layouter::place(const Box &b, double px, double py, XFALayoutPage &lp, int
+     item.lastLine = b.lastLine;
+     item.hasStart = b.hasStart;
+     item.hasEnd = b.hasEnd;
++    item.rotate = b.rotate;
+     lp.items.push_back(item);
+     result.pageOfNode.emplace(b.node->getSerial(), pageIndex);
+     for (const Box &c : b.children) {
+diff --git a/poppler/XFALayout.h b/poppler/XFALayout.h
+index fadfc90..682c91e 100644
+--- a/poppler/XFALayout.h
++++ b/poppler/XFALayout.h
+@@ -32,6 +32,10 @@ struct XFALayoutItem
+     // Fragments of split objects: whether this one has the start and the end.
+     bool hasStart = true;
+     bool hasEnd = true;
++    // Degrees the object is turned counterclockwise: 0, 90, 180 or 270.
++    // x, y, w, h are then the box it covers on the page; unturned it is
++    // h wide and w high for a quarter turn.
++    int rotate = 0;
+ };
+ 
+ struct XFALayoutPage
+@@ -57,6 +61,10 @@ struct XFAInsets
+ };
+ XFAInsets XFAMarginOf(const XFANode *node);
+ 
++// The rotate attribute of a draw or field as 0, 90, 180 or 270 degrees
++// counterclockwise. XFA allows only multiples of 90.
++int XFARotationOf(const XFANode *node);
++
+ struct XFAFieldGeometry
+ {
+     // Rectangles relative to the field's top left corner: x, y, w, h.
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index 95955f9..8e851a5 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -306,6 +306,7 @@ private:
+     std::string da(const XFAFont &font) const;
+     int circleAppearance(double size, bool filled);
+     std::string rect(double x, double y, double w, double h) const;
++    void turnedRect(double &x, double &y, double &w, double &h) const;
+ 
+     XFAForm *form;
+     bool forPrint;
+@@ -313,6 +314,10 @@ private:
+     bool preserveXfa;
+     PDFBuilder pdf;
+     PageOut *page = nullptr;
++    // The turned draw or field being drawn. Its content is drawn unturned
++    // in a turning matrix; its widget is not content, so turnedRect places
++    // that on the page.
++    const XFALayoutItem *turned = nullptr;
+     struct ImageObject
+     {
+         int obj;
+@@ -370,6 +375,43 @@ std::string Writer::rect(double x, double y, double w, double h) const
+     return num(x) + " " + num(py(y + h)) + " " + num(w) + " " + num(h) + " re\n";
+ }
+ 
++// The rectangle x, y, w, h of the turned item, drawn unturned with its top
++// left corner at the item's, as it lies on the page.
++void Writer::turnedRect(double &x, double &y, double &w, double &h) const
++{
++    if (!turned) {
++        return;
++    }
++    const XFALayoutItem &t = *turned;
++    const bool quarter = t.rotate == 90 || t.rotate == 270;
++    const double nw = quarter ? t.h : t.w, nh = quarter ? t.w : t.h;
++    auto map = [&](double px, double py, double &ox, double &oy) {
++        const double u = px - t.x, v = py - t.y;
++        switch (t.rotate) {
++        case 90:
++            ox = v;
++            oy = nw - u;
++            break;
++        case 180:
++            ox = nw - u;
++            oy = nh - v;
++            break;
++        default: // 270
++            ox = nh - v;
++            oy = u;
++        }
++        ox += t.x;
++        oy += t.y;
++    };
++    double x1, y1, x2, y2;
++    map(x, y, x1, y1);
++    map(x + w, y + h, x2, y2);
++    x = std::min(x1, x2);
++    y = std::min(y1, y2);
++    w = std::abs(x2 - x1);
++    h = std::abs(y2 - y1);
++}
++
+ void Writer::drawBorder(const XFANode *border, double x, double y, double w, double h, bool hasStart, bool hasEnd)
+ {
+     if (!border || border->getAttr("presence", "visible") != "visible") {
+@@ -661,6 +703,10 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub
+         rw = size;
+         rh = size;
+     }
++    // A turned field's widget covers its turned box, and viewers turn its
++    // appearance by /R.
++    turnedRect(rx, ry, rw, rh);
++    const std::string turn = turned ? " /R " + std::to_string(turned->rotate) : std::string();
+     std::string common = "/Type /Annot /Subtype /Widget /Rect [" + num(rx) + " " + num(py(ry + rh)) + " " + num(rx + rw) + " " + num(py(ry)) + "] /F 4 /P " + ref(page->pageObj);
+     // Alternate name, for tooltips and screen readers: the tool tip, else
+     // the spoken text, else the caption.
+@@ -702,7 +748,7 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub
+         const int onAP = circleAppearance(rw, true);
+         const int offAP = circleAppearance(rw, false);
+         std::string widget = common + " /AS " + (selected ? pdfName(onState) : std::string("/Off")) + " /AP << /N << " + pdfName(onState) + " " + ref(onAP) + " /Off " + ref(offAP) + " >> >> /MK << /CA "
+-                + (round ? std::string("(l)") : std::string("(4)")) + " >> /DA (/F13 0 Tf 0 g)";
++                + (round ? std::string("(l)") : std::string("(4)")) + turn + " >> /DA (/F13 0 Tf 0 g)";
+         XFANode *group = field->getParent() && field->getParent()->getClassName() == "exclGroup" ? field->getParent() : nullptr;
+         if (group) {
+             int &parentObj = groupObjects[group->getSerial()];
+@@ -721,7 +767,7 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub
+         return;
+     }
+ 
+-    std::string dict = "<< " + common + " /T " + pdfString(name) + " /MK << >>";
++    std::string dict = "<< " + common + " /T " + pdfString(name) + " /MK <<" + turn + " >>";
+     if (ui == "button") {
+         ff |= 65536;
+         const int ap = pdf.addStream("/Type /XObject /Subtype /Form /BBox [0 0 " + num(rw) + " " + num(rh) + "] /Resources << >>", "");
+@@ -984,6 +1030,43 @@ void Writer::drawItem(const XFALayoutItem &item)
+         return;
+     }
+     const std::string &cls = item.node->getClassName();
++    if ((cls == "draw" || cls == "field") && item.rotate != 0) {
++        // Drawn unturned with the same top left corner, in a matrix that
++        // turns it counterclockwise onto the box it covers.
++        XFALayoutItem unturned = item;
++        unturned.rotate = 0;
++        const bool quarter = item.rotate == 90 || item.rotate == 270;
++        if (quarter) {
++            std::swap(unturned.w, unturned.h);
++        }
++        double a = 0, b = 1, c = -1, d = 0, tx = 0, ty = -unturned.w;
++        if (item.rotate == 180) {
++            a = -1;
++            b = 0;
++            c = 0;
++            d = -1;
++            tx = unturned.w;
++            ty = -unturned.h;
++        } else if (item.rotate == 270) {
++            a = 0;
++            b = -1;
++            c = 1;
++            d = 0;
++            tx = unturned.h;
++            ty = 0;
++        }
++        const double ox = item.x, oy = py(item.y);
++        page->ops += "q\n" + num(a) + " " + num(b) + " " + num(c) + " " + num(d) + " " + num(ox - (a * ox + c * oy) + tx) + " " + num(oy - (b * ox + d * oy) + ty) + " cm\n";
++        turned = &item;
++        if (cls == "draw") {
++            drawDraw(unturned);
++        } else {
++            drawField(unturned);
++        }
++        turned = nullptr;
++        page->ops += "Q\n";
++        return;
++    }
+     if (cls == "draw") {
+         drawDraw(item);
+     } else if (cls == "field") {
+-- 
+2.43.0
+

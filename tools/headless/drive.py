@@ -1,4 +1,4 @@
-# Drives the X display :77: drive.py shot out.png | click x y [button] | move x y | type text | key keysym ...
+# Drives the X display :77: drive.py shot out.png | click x y [button] | move x y | type text | key keysym | wheel up|down [ctrl] ...
 import sys, time
 from Xlib import X, XK, display
 from Xlib.ext import xtest
@@ -37,5 +37,14 @@ while args:
             key({' ':'space','-':'minus','.':'period',',':'comma','@':'at','+':'plus','/':'slash','_':'underscore'}.get(ch, ch))
     elif c == 'key':
         key(args.pop(0))
+    elif c == 'wheel':
+        button = 4 if args.pop(0) == 'up' else 5
+        ctrl = bool(args) and args[0] == 'ctrl'
+        if ctrl:
+            args.pop(0)
+            press(d.keysym_to_keycode(XK.string_to_keysym('Control_L')), True); sync()
+        xtest.fake_input(d, X.ButtonPress, button); xtest.fake_input(d, X.ButtonRelease, button); sync()
+        if ctrl:
+            press(d.keysym_to_keycode(XK.string_to_keysym('Control_L')), False); sync()
     elif c == 'sleep':
         time.sleep(float(args.pop(0)))

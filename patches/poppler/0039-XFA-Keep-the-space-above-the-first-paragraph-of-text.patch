@@ -1,0 +1,38 @@
+From e8098e5a381804a331b3bb5cbbe31ba212dc7ea4 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 16:06:02 -0700
+Subject: [PATCH] XFA: Keep the space above the first paragraph of text
+
+Text was drawn from the top of its first line, dropping the space above
+its first paragraph (spaceAbove, or margin-top in rich text) although
+layout measured it. Captions with space above them were drawn on the
+rule over them, as in the signature block of CPT121. Designer's render
+cache shows Acrobat keeps that space: in 151 of 155 corpus draws with
+space above the first paragraph, its first baseline is that much lower.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ poppler/XFAWriter.cc | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index 8e851a5..ed08782 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -539,9 +539,11 @@ void Writer::drawText(const std::vector<XFAParagraph> &paras, const XFAPara &par
+     if (first >= last) {
+         return;
+     }
+-    double offset = -tb.lines[first].top;
++    // Space above the first paragraph is part of the text, as measured;
++    // a fragment continued from an earlier page starts at its first line.
++    double offset = first > 0 ? -tb.lines[first].top : 0;
+     if (!split) {
+-        const double th = tb.heightOf(first, last);
++        const double th = tb.height;
+         if (para.vAlign == "middle") {
+             offset += (h - th) / 2;
+         } else if (para.vAlign == "bottom") {
+-- 
+2.43.0
+

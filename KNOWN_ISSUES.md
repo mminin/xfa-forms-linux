@@ -2,15 +2,32 @@
 
 What still needs fixing in the XFA patch set, and why. This is the developer-facing
 list; the user-facing "Known gaps" in [README.md](README.md) is a shorter summary.
-Last reviewed 2026-10-19.
+Last reviewed 2026-10-19 (after the CPT121 report).
 
 Items are grouped and tagged with a rough priority: **P1** (fix before a serious
 upstream proposal), **P2** (should fix), **P3** (nice to have / documented limitation).
 
 No known crash or security issue is open. What remains are documented limits of the
-engine, each with the reason it stays.
+engine, each with the reason it stays, and one fidelity issue (#13).
 
 ---
+
+## Fidelity
+
+### 13. Text sits 1–3 points lower than in Acrobat — P2
+Designer's render cache (`<?renderCache.textRun?>` in templates) records where
+Acrobat puts each line of a draw. Over about 1,800 cached Helvetica draws in the
+corpus, Acrobat puts the first baseline 0.775 × font size below the top of the
+content, whatever the line height, and spaces lines by `lineHeight`, or 1.2 × size
+without one. We put the first baseline at the font's ascent, 0.905 × size, and add
+any extra line height above the line: 8 pt text is about 1 pt lower, 3 pt with an
+11 pt line height. Without a line height our lines are also 0.08 × size closer.
+**Why it is not fixed yet:** moving the first baseline only moves ink, but changing
+line spacing changes the height of growable text, hence flowed layout and page
+breaks across the corpus; it needs the same old/new corpus comparison as the
+rotation fix, and per-font numbers for the other typefaces. Overlaps such as T1134
+page 16, where a paragraph wraps one line more than in Acrobat and runs into the
+next heading, come from the same metrics.
 
 ## Engine completeness (documented limitations)
 
@@ -44,6 +61,11 @@ ask in those contexts. A form that branches on a docReady answer renders one bra
 ### 12. IMM 5257 page 2 holds only the "office use" box — P3
 Tracked separately; the template's own geometry explains it, and Acrobat appears to
 lay it out the same way. Left as-is pending a counter-example.
+
+### 14. Rotated subforms, areas and exclusion groups — P3
+Draws and fields turn by their `rotate` attribute; containers do not, as turning
+them means turning all their content. **Why:** no corpus form rotates a container;
+the 357 rotated objects in the corpus are all draws and fields.
 
 ---
 
@@ -82,6 +104,13 @@ lay it out the same way. Left as-is pending a counter-example.
 - Embedded copies of linked images are used (poppler 0036).
 - Characters the standard fonts lack became `?`; 13 corpus forms had `?` for bullets
   and arrows, and any Cyrillic, Greek, Chinese or Polish name was lost (poppler 0037).
+- `rotate` was ignored. 75 corpus forms turn rules or text a quarter; CPT121's date
+  underlines became 42 mm bars down the page and RC4649's column headings spilled
+  over its rows (poppler 0038).
+- The space above the first paragraph of text was dropped when drawing, so captions
+  sat on the rule above them; the render cache shows Acrobat keeps it (poppler 0039).
+- Ctrl+wheel did not zoom: the view's GTK 4 scroll controller had no axes, an
+  upstream bug of the port (Evince 0017).
 
 - Verified before publishing (2026-10-19): a fresh clone of the public tree runs
   `scripts/bootstrap.sh` and `scripts/build.sh` from scratch, Zint included, and

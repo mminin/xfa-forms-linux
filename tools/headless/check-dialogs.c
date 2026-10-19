@@ -484,6 +484,29 @@ static const char *tab_xdp =
  * With a single field, Tab comes back to it and opens its editor before the
  * new value is saved, and the form needs no new layout. The editor must then
  * show the saved value, not the one it opened with. */
+/* Ctrl+wheel zooms in the view's scroll controller. A GTK 4 scroll controller
+ * without axes never emits scroll, so the zoom silently stopped working. */
+static void test_ctrl_wheel_zoom (void)
+{
+    GtkWidget *view = g_object_ref_sink (GTK_WIDGET (ev_view_new ()));
+    GListModel *controllers = gtk_widget_observe_controllers (view);
+    gboolean found = FALSE;
+
+    for (guint i = 0; i < g_list_model_get_n_items (controllers); ++i) {
+        GObject *controller = g_list_model_get_item (controllers, i);
+        if (GTK_IS_EVENT_CONTROLLER_SCROLL (controller)) {
+            GtkEventControllerScrollFlags flags = gtk_event_controller_scroll_get_flags (GTK_EVENT_CONTROLLER_SCROLL (controller));
+            g_assert_true (flags & GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
+            g_assert_true (flags & GTK_EVENT_CONTROLLER_SCROLL_HORIZONTAL);
+            found = TRUE;
+        }
+        g_object_unref (controller);
+    }
+    g_assert_true (found);
+    g_object_unref (controllers);
+    g_object_unref (view);
+}
+
 static void test_tab_refresh (void)
 {
     gchar *path = write_fixture_xdp (tab_xdp);
@@ -546,6 +569,7 @@ int main (int argc, char **argv)
     g_test_add_func ("/view/editor-document-change", test_editor_document_change);
     g_test_add_func ("/view/launch-url", test_launch_url);
     g_test_add_func ("/view/tab-refresh", test_tab_refresh);
+    g_test_add_func ("/view/ctrl-wheel-zoom", test_ctrl_wheel_zoom);
     int result = g_test_run ();
     ev_shutdown ();
     return result;
