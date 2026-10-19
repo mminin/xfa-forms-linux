@@ -1,0 +1,36 @@
+From 76b192e9936d81f621f63709d113ee068b4fbbad Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 11:31:20 -0700
+Subject: [PATCH] libview: Unparent form editors before the view is finalized
+
+A form field's edit widget is parented to the view. If the window closes
+while a field is being edited, the widget outlives dispose and GTK warns
+"Finalizing EvView, but it still has children left", then aborts. Unparent
+any remaining children in dispose, as GTK4 requires.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ libview/ev-view.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index cdd4dcf..6c8394e 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -7977,6 +7977,13 @@ ev_view_dispose (GObject *object)
+         gtk_scrollable_set_hadjustment (GTK_SCROLLABLE (view), NULL);
+         gtk_scrollable_set_vadjustment (GTK_SCROLLABLE (view), NULL);
+ 
++	/* A form-field editor or popover may still be parented to the view,
++	 * for example when the window is closed mid-edit. GTK4 requires every
++	 * child to be unparented before the widget is finalized. */
++	GtkWidget *child;
++	while ((child = gtk_widget_get_first_child (GTK_WIDGET (view))) != NULL)
++		gtk_widget_unparent (child);
++
+ 	G_OBJECT_CLASS (ev_view_parent_class)->dispose (object);
+ }
+ 
+-- 
+2.43.0
+

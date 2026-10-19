@@ -173,7 +173,7 @@ Poppler (`patches/poppler/`, about 13,200 added lines):
 | 0026 | Refuse truncated TIFF and GIF images, which could claim huge sizes |
 | 0027 | Bound recursive tree walks so a script cannot overflow the stack |
 
-Evince (`patches/evince/`, about 1,000 added lines):
+Evince (`patches/evince/`, about 1,150 added lines):
 
 | Patch | What it does |
 |---|---|
@@ -187,6 +187,8 @@ Evince (`patches/evince/`, about 1,000 added lines):
 | 0009 | Move to the field that form scripts ask for, such as the first one to correct |
 | 0010 | Show script questions and text prompts, returning the user's answer or cancellation |
 | 0011 | Commit form editors outside GTK focus transitions |
+| 0012 | Unparent form editors before the view is finalized, fixing a teardown crash |
+| 0013 | Confirm script-requested URLs with an Allow/Block prompt, like Reader's Trust Manager |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.
@@ -209,8 +211,8 @@ Most of this code was written with AI coding assistants: Anthropic's Claude (com
 carrying a `Co-Authored-By: Claude` line) and OpenAI Codex using **GPT-6.1 Sol**
 (`gpt-6.1-sol`, reasoning effort `high`; Poppler 0008–0009 and 0022–0025; Evince 0007–0008 and 0010–0011).
 The model and effort were verified against the local Codex session records.
-Poppler 0026–0027 were written by Claude Opus (5.5 and 4.8 respectively),
-as their commit trailers record.
+Poppler 0026–0027 and Evince 0012–0013 were written by Claude Opus (5.5
+and 4.8), as their commit trailers record.
 The [PR plan](PR_PLAN.md) records the contribution breakdown and attribution to
 carry into upstream submissions. The human maintainer, mminin <mminin2010@gmail.com>, directed
 the work and is responsible for it. Mozilla's

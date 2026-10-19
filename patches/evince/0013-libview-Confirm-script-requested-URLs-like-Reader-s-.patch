@@ -1,0 +1,190 @@
+From eb5898fbba3f08a8f53cb0b74e3ae49c66ee058c Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 11:31:27 -0700
+Subject: [PATCH] libview: Confirm script-requested URLs like Reader's Trust
+ Manager
+
+An XFA form script can call app.launchURL()/gotoURL() to open a URL. The
+view opened it in the default handler with no confirmation, so a form
+could reach out to arbitrary sites or local handlers when its scripts run.
+
+Mirror Adobe Reader: warn the user with the URL and Allow/Block, and let
+them remember the choice per site. Only http(s) links are offered; other
+schemes are refused, as Reader refuses non-web targets. The warning runs
+modally like the other script dialogs, and a reload that replaces the
+document under it stops the remaining requests.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ libview/ev-view-private.h |   3 +
+ libview/ev-view.c         | 126 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 129 insertions(+)
+
+diff --git a/libview/ev-view-private.h b/libview/ev-view-private.h
+index 0937cbe..5ac712d 100644
+--- a/libview/ev-view-private.h
++++ b/libview/ev-view-private.h
+@@ -239,6 +239,9 @@ typedef struct _EvViewPrivate {
+ 	gboolean form_dialog_running;
+ 	/* The field to edit again once the changed document is loaded */
+ 	gchar *refocus_field_name;
++	/* Per-site Allow/Block choices a user asked to remember for script-
++	 * requested URLs: host string -> GINT_TO_POINTER(1 allow, 2 block) */
++	GHashTable *form_url_sites;
+ 
+ 	/* Synctex */
+ 	EvMapping *synctex_result;
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 6c8394e..6f49c7a 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2655,6 +2655,121 @@ ev_view_focus_form_field_by_name (EvView      *view,
+ 	}
+ }
+ 
++/* A form script asking to open a URL is gated like Adobe Reader's Trust
++ * Manager: the user is warned and chooses Allow or Block, and may remember
++ * the choice for that site. Only http(s) links are offered; other schemes
++ * are refused, as Reader refuses non-web targets. */
++#define EV_FORM_URL_BLOCK 1
++#define EV_FORM_URL_ALLOW 2
++
++typedef struct {
++	GMainLoop *loop;
++	gint answer;
++	gboolean done;
++	gboolean user; /* TRUE only when a real button press answered */
++} EvViewUrlConfirm;
++
++static void
++ev_view_url_confirm_response (GtkDialog *dialog, gint response, EvViewUrlConfirm *state)
++{
++	if (state->done)
++		return;
++	state->done = TRUE;
++	state->user = dialog != NULL;
++	state->answer = response == EV_FORM_URL_ALLOW ? EV_FORM_URL_ALLOW : EV_FORM_URL_BLOCK;
++	g_main_loop_quit (state->loop);
++}
++
++static void
++ev_view_url_confirm_cancel (GtkWidget *widget, EvViewUrlConfirm *state)
++{
++	ev_view_url_confirm_response (NULL, EV_FORM_URL_BLOCK, state);
++}
++
++/* TRUE if the script-requested uri should be opened. Prompts unless the site
++ * has a remembered decision; a refused scheme or a lost document means no. */
++static gboolean
++ev_view_confirm_script_url (EvView *view, const gchar *uri)
++{
++	EvViewPrivate *priv = GET_PRIVATE (view);
++	GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (view));
++	g_autoptr (GUri) parsed = g_uri_parse (uri, G_URI_FLAGS_NONE, NULL);
++	const gchar *scheme = parsed ? g_uri_get_scheme (parsed) : NULL;
++	const gchar *host = parsed ? g_uri_get_host (parsed) : NULL;
++	GtkWidget *dialog, *content, *label, *remember;
++	g_autofree gchar *message = NULL;
++	g_autoptr (EvDocumentModel) model = NULL;
++	gpointer decision;
++	EvViewUrlConfirm state = { NULL, EV_FORM_URL_BLOCK, FALSE, FALSE };
++
++	if (g_strcmp0 (scheme, "http") != 0 && g_strcmp0 (scheme, "https") != 0)
++		return FALSE;
++	if (!host || !*host)
++		return FALSE;
++
++	/* A choice the user asked to remember needs no further prompt. */
++	if (priv->form_url_sites &&
++	    g_hash_table_lookup_extended (priv->form_url_sites, host, NULL, &decision))
++		return GPOINTER_TO_INT (decision) == EV_FORM_URL_ALLOW;
++
++	if (priv->form_dialog_running || !GTK_IS_WINDOW (root) || !priv->model)
++		return FALSE;
++
++	model = g_object_ref (priv->model);
++	state.loop = g_main_loop_new (NULL, FALSE);
++	dialog = gtk_dialog_new ();
++	g_object_ref_sink (dialog);
++	gtk_window_set_title (GTK_WINDOW (dialog), _("Security Warning"));
++	gtk_window_set_transient_for (GTK_WINDOW (dialog), GTK_WINDOW (root));
++	gtk_window_set_modal (GTK_WINDOW (dialog), TRUE);
++	gtk_window_set_destroy_with_parent (GTK_WINDOW (dialog), TRUE);
++	gtk_window_set_default_size (GTK_WINDOW (dialog), 440, -1);
++	content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
++	gtk_box_set_spacing (GTK_BOX (content), 12);
++	gtk_widget_set_margin_start (content, 18);
++	gtk_widget_set_margin_end (content, 18);
++	gtk_widget_set_margin_top (content, 18);
++	gtk_widget_set_margin_bottom (content, 18);
++	message = g_strdup_printf (_("This document is trying to connect to:\n%s\n\n"
++				    "If you trust this site, choose Allow. If you do not "
++				    "trust this site, choose Block."), uri);
++	label = gtk_label_new (message);
++	gtk_label_set_wrap (GTK_LABEL (label), TRUE);
++	gtk_label_set_max_width_chars (GTK_LABEL (label), 65);
++	gtk_label_set_xalign (GTK_LABEL (label), 0);
++	gtk_label_set_selectable (GTK_LABEL (label), TRUE);
++	gtk_box_append (GTK_BOX (content), label);
++	remember = gtk_check_button_new_with_label (_("Remember this action for this site"));
++	gtk_box_append (GTK_BOX (content), remember);
++	gtk_dialog_add_buttons (GTK_DIALOG (dialog),
++		_("_Block"), EV_FORM_URL_BLOCK, _("_Allow"), EV_FORM_URL_ALLOW, NULL);
++	gtk_dialog_set_default_response (GTK_DIALOG (dialog), EV_FORM_URL_BLOCK);
++	g_signal_connect (dialog, "response", G_CALLBACK (ev_view_url_confirm_response), &state);
++	g_signal_connect (dialog, "unrealize", G_CALLBACK (ev_view_url_confirm_cancel), &state);
++	g_signal_connect (view, "unrealize", G_CALLBACK (ev_view_url_confirm_cancel), &state);
++	g_signal_connect (model, "notify::document", G_CALLBACK (ev_view_url_confirm_cancel), &state);
++	priv->form_dialog_running = TRUE;
++	gtk_window_present (GTK_WINDOW (dialog));
++	if (!state.done)
++		g_main_loop_run (state.loop);
++	/* Remember only a deliberate choice, never a dialog torn down because the
++	 * document changed under it. */
++	if (state.user && gtk_check_button_get_active (GTK_CHECK_BUTTON (remember))) {
++		if (!priv->form_url_sites)
++			priv->form_url_sites = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++		g_hash_table_insert (priv->form_url_sites, g_strdup (host), GINT_TO_POINTER (state.answer));
++	}
++	g_signal_handlers_disconnect_by_data (model, &state);
++	g_signal_handlers_disconnect_by_data (view, &state);
++	g_signal_handlers_disconnect_by_data (dialog, &state);
++	gtk_window_destroy (GTK_WINDOW (dialog));
++	g_object_unref (dialog);
++	g_main_loop_unref (state.loop);
++	priv->form_dialog_running = FALSE;
++
++	return state.user && state.answer == EV_FORM_URL_ALLOW;
++}
++
+ /* Some forms run scripts when their fields change: they can ask to show
+  * messages, open URLs, print or move to a field, and can change the pages
+  * of the document, which then has to be replaced. */
+@@ -2686,6 +2801,16 @@ ev_view_apply_form_changes (EvView *view)
+ 	strv = ev_document_forms_take_urls (forms);
+ 	for (gchar **url = strv; url && *url; url++) {
+ 		g_autofree gchar *uri = strstr (*url, "://") ? g_strdup (*url) : g_strconcat ("https://", *url, NULL);
++
++		/* A modal warning may let a reload replace the document; stop
++		 * acting on this one's requests once that happens. */
++		if (priv->document != EV_DOCUMENT (forms) || priv->model != model)
++			break;
++		if (!ev_view_confirm_script_url (view, uri))
++			continue;
++		if (priv->document != EV_DOCUMENT (forms) || priv->model != model)
++			break;
++
+ 		EvLinkAction *action = ev_link_action_new_external_uri (uri);
+ 		EvLink *link = ev_link_new (NULL, action);
+ 
+@@ -7935,6 +8060,7 @@ ev_view_finalize (GObject *object)
+ 
+ 	g_clear_object (&priv->image_dnd_info.image);
+ 	g_clear_pointer (&priv->annot_window_map, g_hash_table_destroy);
++	g_clear_pointer (&priv->form_url_sites, g_hash_table_destroy);
+ 
+ 	G_OBJECT_CLASS (ev_view_parent_class)->finalize (object);
+ }
+-- 
+2.43.0
+
