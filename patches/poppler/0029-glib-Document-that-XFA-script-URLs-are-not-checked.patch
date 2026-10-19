@@ -1,0 +1,33 @@
+From e9e88dae1eef4e2c19e63c06f12235e662b0ef2d Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 12:16:48 -0700
+Subject: [PATCH] glib: Document that XFA script URLs are not checked
+
+poppler_document_xfa_take_urls() hands over whatever URLs the form's
+scripts asked for. Say that they may use any scheme and come without user
+action, so hosts ask before opening them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/poppler-document.cc | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/glib/poppler-document.cc b/glib/poppler-document.cc
+index 54ae812..42930f9 100644
+--- a/glib/poppler-document.cc
++++ b/glib/poppler-document.cc
+@@ -2430,6 +2430,11 @@ gchar **poppler_document_xfa_take_messages(PopplerDocument *document)
+  * Returns the URLs the scripts of the XFA form asked to open since the
+  * last call, and forgets them.
+  *
++ * The URLs come from the document and are not checked: they may use any
++ * scheme, and scripts can request them without any user action. Ask the
++ * user before opening one, as Adobe Reader does, and consider allowing
++ * only web addresses.
++ *
+  * Return value: (transfer full) (array zero-terminated=1): the URLs.
+  *   Free with g_strfreev().
+  *
+-- 
+2.43.0
+

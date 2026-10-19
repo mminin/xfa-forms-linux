@@ -14,21 +14,6 @@ Nothing here is a known memory-corruption bug. The crashes listed are denial-of-
 
 ## Security and robustness
 
-### 1. 32-bit overflow in image dimension arithmetic — P2
-`poppler/XFAWriter.cc:474` computes the display size as `img->width * 72 / dpiX`
-in `int` arithmetic. The image decoder accepts widths up to `maxPixels` (2^26) in
-`poppler/XFAImage.cc`, so `width * 72` overflows a 32-bit `int` for widths above
-~29.8 million.
-
-**Why it matters:** signed overflow is undefined behaviour (UBSan flags it) and
-yields a wrong `/Width`/`/Height` in the emitted PDF. It is *not* memory corruption —
-the value is only used as a numeric dimension — so the impact is a malformed object,
-not a crash or a write. It escaped the prior UBSan run only because no corpus image
-is that wide.
-
-**Fix:** do the multiplication in `long long`, or lower `maxPixels` to a value whose
-`* 72` cannot overflow. One line either way.
-
 ### 2. URL "remember" is session-scoped, not persistent — P2
 Evince 0013 mirrors Adobe Reader's Trust Manager prompt (Allow/Block, "remember this
 site"), but the remembered per-host decisions live in an in-memory `GHashTable` on the
@@ -44,13 +29,6 @@ setting. The current gate is safe (it defaults to prompting) but forgets choices
 preference. Decide whether "remember" should be app-wide (Reader) or per-window
 (current). Deferred intentionally for the first debut; prompt-every-session is the
 safe default.
-
-### 3. The URL gate is Evince-only, by design — P3 (document, not fix)
-`pdfxfa` (the CLI) only *prints* `launchURL`/`print` host requests; it never opens
-anything, so it needs no gate. Any *other* glib host that wires up
-`poppler_document_xfa_take_urls()` must implement its own confirmation — poppler
-hands over the URLs without judging them. Worth a sentence in the glib API docs so a
-future host does not repeat the silent-open mistake.
 
 ---
 
@@ -139,5 +117,7 @@ lay it out the same way. Left as-is pending a counter-example.
 - Script-built deep-tree stack overflow in the recursive walkers (poppler 0027).
 - Silent `launchURL` → Reader-style Allow/Block gate (Evince 0013).
 - Form-editor teardown crash on close-mid-edit (Evince 0012).
+- Integer overflow in image size arithmetic (poppler 0028).
+- glib API docs warn hosts that script URLs are unchecked (poppler 0029).
 
 See the commit messages of those patches for detail.

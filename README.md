@@ -173,6 +173,8 @@ Poppler (`patches/poppler/`, about 13,200 added lines):
 | 0025 | `pdfxfa` reports errors when flushing its output |
 | 0026 | Refuse truncated TIFF and GIF images, which could claim huge sizes |
 | 0027 | Bound recursive tree walks so a script cannot overflow the stack |
+| 0028 | Compute image sizes in floating point, avoiding an integer overflow |
+| 0029 | Document that URLs from XFA scripts are unchecked (glib API) |
 
 Evince (`patches/evince/`, about 1,150 added lines):
 
