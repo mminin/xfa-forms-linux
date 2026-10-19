@@ -1,0 +1,302 @@
+From bdbf5d64ee81c865420810727e98d4ec3d9548b6 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 17:38:40 -0700
+Subject: [PATCH] libview: Commit form editors outside GTK focus transitions
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ libview/ev-view.c | 134 ++++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 111 insertions(+), 23 deletions(-)
+
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 5e3051c..cdd4dcf 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2529,11 +2529,53 @@ ev_view_form_field_get_region (EvView      *view,
+ 	return cairo_region_create_rectangle (&view_area);
+ }
+ 
++typedef struct {
++	GtkWidget *widget;
++	EvView *view;
++	gboolean remove;
++} EvViewFormEditorAction;
++
++static void ev_view_form_field_text_save (EvView *view, GtkWidget *widget);
++static void ev_view_form_field_choice_save (EvView *view, GtkWidget *widget);
++
++static EvViewFormEditorAction *
++ev_view_form_editor_action_new (GtkWidget *widget, EvView *view, gboolean remove)
++{
++	EvViewFormEditorAction *action = g_new0 (EvViewFormEditorAction, 1);
++
++	action->widget = g_object_ref (widget);
++	action->view = g_object_ref (view);
++	action->remove = remove;
++	return action;
++}
++
++static void
++ev_view_form_editor_action_idle (gpointer user_data)
++{
++	EvViewFormEditorAction *action = user_data;
++	EvFormField *field = g_object_get_data (G_OBJECT (action->widget), "form-field");
++
++	/* Run scripts after GTK has finished the focus/unparent transition.
++	 * In particular, a script dialog must not nest inside that transition. */
++	if (EV_IS_FORM_FIELD_TEXT (field))
++		ev_view_form_field_text_save (action->view, action->widget);
++	else if (EV_IS_FORM_FIELD_CHOICE (field))
++		ev_view_form_field_choice_save (action->view, action->widget);
++
++	/* A deferred close must not remove an editor in a replacement document. */
++	if (action->remove && gtk_widget_get_parent (action->widget) == GTK_WIDGET (action->view))
++		ev_view_remove_all_form_fields (action->view);
++	g_object_unref (action->widget);
++	g_object_unref (action->view);
++	g_free (action);
++}
++
+ static void
+ ev_view_form_field_destroy (GtkWidget *widget,
+ 			    EvView    *view)
+ {
+-	g_idle_add_once ((GSourceOnceFunc)ev_view_remove_all_form_fields, view);
++	g_idle_add_once (ev_view_form_editor_action_idle,
++			 ev_view_form_editor_action_new (widget, view, TRUE));
+ }
+ 
+ /* The name of the text or choice field being edited, if any */
+@@ -2620,6 +2662,8 @@ static void
+ ev_view_apply_form_changes (EvView *view)
+ {
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
++	g_autoptr (EvView) self = g_object_ref (view);
++	g_autoptr (EvDocumentModel) model = NULL;
+ 	EvDocumentForms *forms;
+ 	EvDocument *rerendered;
+ 	gchar **strv;
+@@ -2637,6 +2681,7 @@ ev_view_apply_form_changes (EvView *view)
+ 		return;
+ 
+ 	forms = EV_DOCUMENT_FORMS (g_object_ref (priv->document));
++	model = g_object_ref (priv->model);
+ 
+ 	strv = ev_document_forms_take_urls (forms);
+ 	for (gchar **url = strv; url && *url; url++) {
+@@ -2667,6 +2712,12 @@ ev_view_apply_form_changes (EvView *view)
+ 
+ 	/* The model keeps the current page, and the view its position on it. */
+ 	rerendered = ev_document_forms_rerender (forms);
++	/* A modal script dialog may have let a reload replace the model. */
++	if (priv->document != EV_DOCUMENT (forms) || priv->model != model) {
++		g_clear_object (&rerendered);
++		g_object_unref (forms);
++		return;
++	}
+ 	if (rerendered) {
+ 		g_autofree gchar *edited = ev_view_get_edited_field_name (view);
+ 
+@@ -2904,15 +2955,22 @@ ev_view_form_field_button_toggle (EvView      *view,
+ 	gboolean           state;
+ 	GList             *l;
+ 	EvFormFieldButton *field_button = EV_FORM_FIELD_BUTTON (field);
++	g_autoptr (EvView) self = NULL;
++	g_autoptr (EvDocument) document = NULL;
++	g_autoptr (GObject) held_field = NULL;
+ 
+-	if (priv->form_dialog_running)
++	if (!priv->document || priv->form_dialog_running)
+ 		return;
++	self = g_object_ref (view);
++	document = g_object_ref (priv->document);
++	held_field = g_object_ref (G_OBJECT (field));
+ 
+ 	if (field_button->type == EV_FORM_FIELD_BUTTON_PUSH) {
+ 		/* Clicks forms that act on them, such as XFA forms. */
+-		ev_document_forms_form_field_button_set_state (EV_DOCUMENT_FORMS (priv->document),
++		ev_document_forms_form_field_button_set_state (EV_DOCUMENT_FORMS (document),
+ 							       field, TRUE);
+-		ev_view_form_changed (view);
++		if (priv->document == document)
++			ev_view_form_changed (view);
+ 		return;
+ 	}
+ 
+@@ -2950,10 +3008,14 @@ ev_view_form_field_button_toggle (EvView      *view,
+ 	}
+ 
+ 	/* Update state */
+-	ev_document_forms_form_field_button_set_state (EV_DOCUMENT_FORMS (priv->document),
++	ev_document_forms_form_field_button_set_state (EV_DOCUMENT_FORMS (document),
+ 						       field,
+ 						       !state);
+ 	field_button->state = !state;
++	if (priv->document != document) {
++		cairo_region_destroy (region);
++		return;
++	}
+ 
+ #if 0
+ 	if (priv->accessible)
+@@ -2993,11 +3055,19 @@ ev_view_form_field_text_save (EvView    *view,
+ {
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
+ 	EvFormField *field;
++	g_autoptr (EvView) self = NULL;
++	g_autoptr (EvDocument) document = NULL;
++	g_autoptr (GObject) held_field = NULL;
+ 
+ 	if (!priv->document || priv->form_dialog_running)
+ 		return;
+ 
+ 	field = g_object_get_data (G_OBJECT (widget), "form-field");
++	if (g_object_get_data (G_OBJECT (widget), "form-document") != priv->document)
++		return;
++	self = g_object_ref (view);
++	document = g_object_ref (priv->document);
++	held_field = g_object_ref (G_OBJECT (field));
+ 
+ 	if (field->changed) {
+ 		EvFormFieldText *field_text = EV_FORM_FIELD_TEXT (field);
+@@ -3005,12 +3075,14 @@ ev_view_form_field_text_save (EvView    *view,
+ 
+ 		field_region = ev_view_form_field_get_region (view, field);
+ 
+-		ev_document_forms_form_field_text_set_text (EV_DOCUMENT_FORMS (priv->document),
++		ev_document_forms_form_field_text_set_text (EV_DOCUMENT_FORMS (document),
+ 							    field, field_text->text);
+ 		field->changed = FALSE;
+-		ev_view_reload_page (view, field->page->index, field_region);
++		if (priv->document == document) {
++			ev_view_reload_page (view, field->page->index, field_region);
++			ev_view_form_changed (view);
++		}
+ 		cairo_region_destroy (field_region);
+-		ev_view_form_changed (view);
+ 	}
+ }
+ 
+@@ -3044,7 +3116,11 @@ ev_view_form_field_text_focus_out (GtkEventControllerFocus	*self,
+ 				   EvView			*view)
+ {
+ 	GtkWidget *widget = gtk_event_controller_get_widget (GTK_EVENT_CONTROLLER (self));
+-	ev_view_form_field_text_save (view, widget);
++	EvViewPrivate *priv = GET_PRIVATE (view);
++
++	if (priv->document)
++		g_idle_add_once (ev_view_form_editor_action_idle,
++				 ev_view_form_editor_action_new (widget, view, FALSE));
+ }
+ 
+ static void
+@@ -3115,10 +3191,6 @@ ev_view_form_field_text_create_widget (EvView      *view,
+ 				G_CALLBACK (ev_view_form_field_text_button_pressed), NULL);
+ 	gtk_widget_add_controller (text, controller);
+ 
+-	g_object_weak_ref (G_OBJECT (text),
+-			   (GWeakNotify)ev_view_form_field_text_save,
+-			   view);
+-
+ 	return text;
+ }
+ 
+@@ -3128,11 +3200,19 @@ ev_view_form_field_choice_save (EvView    *view,
+ {
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
+ 	EvFormField *field;
++	g_autoptr (EvView) self = NULL;
++	g_autoptr (EvDocument) document = NULL;
++	g_autoptr (GObject) held_field = NULL;
+ 
+ 	if (!priv->document || priv->form_dialog_running)
+ 		return;
+ 
+ 	field = g_object_get_data (G_OBJECT (widget), "form-field");
++	if (g_object_get_data (G_OBJECT (widget), "form-document") != priv->document)
++		return;
++	self = g_object_ref (view);
++	document = g_object_ref (priv->document);
++	held_field = g_object_ref (G_OBJECT (field));
+ 
+ 	if (field->changed) {
+ 		GList             *l;
+@@ -3142,20 +3222,24 @@ ev_view_form_field_choice_save (EvView    *view,
+ 		field_region = ev_view_form_field_get_region (view, field);
+ 
+ 		if (field_choice->is_editable) {
+-			ev_document_forms_form_field_choice_set_text (EV_DOCUMENT_FORMS (priv->document),
++			ev_document_forms_form_field_choice_set_text (EV_DOCUMENT_FORMS (document),
+ 								      field, field_choice->text);
+ 		} else {
+-			ev_document_forms_form_field_choice_unselect_all (EV_DOCUMENT_FORMS (priv->document), field);
++			ev_document_forms_form_field_choice_unselect_all (EV_DOCUMENT_FORMS (document), field);
+ 			for (l = field_choice->selected_items; l; l = g_list_next (l)) {
+-				ev_document_forms_form_field_choice_select_item (EV_DOCUMENT_FORMS (priv->document),
++				ev_document_forms_form_field_choice_select_item (EV_DOCUMENT_FORMS (document),
+ 										 field,
+ 										 GPOINTER_TO_INT (l->data));
++				if (priv->document != document)
++					break;
+ 			}
+ 		}
+ 		field->changed = FALSE;
+-		ev_view_reload_page (view, field->page->index, field_region);
++		if (priv->document == document) {
++			ev_view_reload_page (view, field->page->index, field_region);
++			ev_view_form_changed (view);
++		}
+ 		cairo_region_destroy (field_region);
+-		ev_view_form_changed (view);
+ 	}
+ }
+ 
+@@ -3402,10 +3486,6 @@ ev_view_form_field_choice_create_widget (EvView      *view,
+ 
+ 	g_object_unref (model);
+ 
+-	g_object_weak_ref (G_OBJECT (choice),
+-			   (GWeakNotify)ev_view_form_field_choice_save,
+-			   view);
+-
+ 	return choice;
+ }
+ 
+@@ -3443,6 +3523,8 @@ _ev_view_focus_form_field (EvView      *view,
+ 	g_object_set_data_full (G_OBJECT (field_widget), "form-field",
+ 				g_object_ref (field),
+ 				(GDestroyNotify)g_object_unref);
++	g_object_set_data_full (G_OBJECT (field_widget), "form-document",
++				g_object_ref (priv->document), g_object_unref);
+ 
+ 	form_field_mapping = ev_page_cache_get_form_field_mapping (priv->page_cache,
+ 								   field->page->index);
+@@ -6177,8 +6259,11 @@ ev_view_remove_all_form_fields (EvView *view)
+ 	while (child != NULL) {
+ 		GtkWidget *next = gtk_widget_get_next_sibling (child);
+ 
+-		if (g_object_get_data (G_OBJECT (child), "form-field"))
++		if (g_object_get_data (G_OBJECT (child), "form-field")) {
++			g_idle_add_once (ev_view_form_editor_action_idle,
++					 ev_view_form_editor_action_new (child, view, FALSE));
+ 			gtk_widget_unparent (child);
++		}
+ 
+ 		child = next;
+ 	}
+@@ -6192,6 +6277,9 @@ ev_view_remove_all (EvView *view)
+ 	while (child != NULL) {
+ 		GtkWidget *next = gtk_widget_get_next_sibling (child);
+ 
++		if (g_object_get_data (G_OBJECT (child), "form-field"))
++			g_idle_add_once (ev_view_form_editor_action_idle,
++					 ev_view_form_editor_action_new (child, view, FALSE));
+ 		gtk_widget_unparent (child);
+ 
+ 		child = next;
+-- 
+2.43.0
+

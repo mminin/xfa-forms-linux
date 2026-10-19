@@ -1,0 +1,188 @@
+From e6c9fc0ea4203c0a6b4da6b59ce4b1f0a7e5d079 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 17:35:27 -0700
+Subject: [PATCH] XFA: Reject corrupt state and handle deeply nested or
+ incomplete templates
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ glib/tests/check_xfa.c | 73 ++++++++++++++++++++++++++++++++++++++++--
+ poppler/XFAForm.cc     |  8 ++++-
+ poppler/XFANode.cc     |  6 ++++
+ poppler/XFAWriter.cc   |  3 +-
+ 4 files changed, 86 insertions(+), 4 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index 701c8fe..fd5ffc5 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -50,7 +50,7 @@ static const char *xdp = "<?xml version=\"1.0\"?>\n"
+                          "</template>"
+                          "</xdp:xdp>";
+ 
+-static GBytes *build_pdf_from(const char *xdp)
++static GBytes *build_pdf_with_state(const char *xdp, const char *state)
+ {
+     char *objects[4];
+     gsize offsets[4];
+@@ -58,7 +58,7 @@ static GBytes *build_pdf_from(const char *xdp)
+     gsize xref_offset;
+     int i;
+ 
+-    objects[0] = g_strdup("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /XFA 4 0 R >> /NeedsRendering true >>");
++    objects[0] = g_strdup_printf("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /XFA 4 0 R %s >> /NeedsRendering true >>", state ? state : "");
+     objects[1] = g_strdup("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+     objects[2] = g_strdup("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>");
+     objects[3] = g_strdup_printf("<< /Length %u >>\nstream\n%s\nendstream", (guint)strlen(xdp), xdp);
+@@ -79,6 +79,11 @@ static GBytes *build_pdf_from(const char *xdp)
+     return g_string_free_to_bytes(pdf);
+ }
+ 
++static GBytes *build_pdf_from(const char *xdp)
++{
++    return build_pdf_with_state(xdp, NULL);
++}
++
+ static char *page_text(PopplerDocument *doc)
+ {
+     PopplerPage *page = poppler_document_get_page(doc, 0);
+@@ -1109,6 +1114,67 @@ static void test_dialogs(void)
+     g_bytes_unref(bytes);
+ }
+ 
++static void assert_render_error(GBytes *bytes, const char *message)
++{
++    GError *error = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &error);
++    g_assert_no_error(error);
++    g_assert_nonnull(source);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &error);
++    g_assert_null(rendered);
++    g_assert_error(error, POPPLER_ERROR, POPPLER_ERROR_INVALID);
++    g_assert_nonnull(strstr(error->message, message));
++    g_clear_error(&error);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
++static void test_xml_depth(void)
++{
++    GString *xml = g_string_new(NULL);
++    for (int i = 0; i < 6000; ++i) {
++        g_string_append(xml, "<n>");
++    }
++    for (int i = 0; i < 6000; ++i) {
++        g_string_append(xml, "</n>");
++    }
++    assert_render_error(build_pdf_from(xml->str), "nested too deeply");
++    g_string_free(xml, TRUE);
++}
++
++static void test_invalid_state_type(void)
++{
++    const char *states[] = { "/PopplerXFAState 123", "/PopplerXFAState <<>>", "/PopplerXFAState (broken)", "/PopplerXFAState []" };
++    for (guint i = 0; i < G_N_ELEMENTS(states); ++i) {
++        assert_render_error(build_pdf_with_state(xdp, states[i]), "invalid saved XFA state");
++    }
++}
++
++static void test_default_ui(void)
++{
++    const char *xml = "<template><subform name=\"form1\"><pageSet><pageArea><contentArea x=\"0in\" y=\"0in\" w=\"6in\" h=\"9in\"/>"
++                      "<medium short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
++                      "<field name=\"default\" w=\"3in\" h=\"0.4in\"><assist><toolTip>Default</toolTip></assist><value><text>Default widget</text></value></field>"
++                      "</subform></template>";
++    GBytes *bytes = build_pdf_from(xml);
++    GError *error = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &error);
++    g_assert_no_error(error);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &error);
++    g_assert_no_error(error);
++    g_assert_nonnull(rendered);
++    PopplerFormField *field = field_named(rendered, "Default");
++    g_assert_nonnull(field);
++    g_assert_cmpint(poppler_form_field_get_field_type(field), ==, POPPLER_FORM_FIELD_TEXT);
++    gchar *text = poppler_form_field_text_get_text(field);
++    g_assert_cmpstr(text, ==, "Default widget");
++    g_free(text);
++    g_object_unref(field);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -1126,5 +1192,8 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/pagination", test_pagination);
+     g_test_add_func("/xfa/focus", test_focus);
+     g_test_add_func("/xfa/dialogs", test_dialogs);
++    g_test_add_func("/xfa/xml-depth", test_xml_depth);
++    g_test_add_func("/xfa/invalid-state-type", test_invalid_state_type);
++    g_test_add_func("/xfa/default-ui", test_default_ui);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 9db85ab..42739b1 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -505,6 +505,10 @@ bool XFAForm::build(PDFDoc *doc, std::string *error)
+     }
+ 
+     Object saved = doc->getCatalog()->getAcroForm()->dictLookup("PopplerXFAState");
++    if (!saved.isNull() && !saved.isStream()) {
++        *error = "invalid saved XFA state";
++        return false;
++    }
+     const bool restored = saved.isStream();
+     if (restored) {
+         std::string xml;
+@@ -1210,7 +1214,9 @@ std::optional<std::string> XFAForm::getWidgetValue(XFANode *node) const
+     const std::string formatted = getFormattedValue(node);
+     const XFANode *value = node->firstChild("value");
+     const XFANode *text = value ? value->firstChild("text") : nullptr;
+-    const XFANode *comb = node->firstChild("ui")->firstChild(ui)->firstChild("comb");
++    const XFANode *uiNode = node->firstChild("ui");
++    const XFANode *widget = uiNode ? uiNode->firstChild(ui) : nullptr;
++    const XFANode *comb = widget ? widget->firstChild("comb") : nullptr;
+     const long maxChars = text ? std::atol(text->getAttr("maxChars", "0").c_str()) : 0;
+     if (comb || (maxChars > 0 && static_cast<long>(formatted.size()) > maxChars)) {
+         return raw;
+diff --git a/poppler/XFANode.cc b/poppler/XFANode.cc
+index 70c879b..08caf75 100644
+--- a/poppler/XFANode.cc
++++ b/poppler/XFANode.cc
+@@ -392,6 +392,12 @@ std::string XMLParser::resolve(const std::string &prefix) const
+ 
+ std::unique_ptr<XFANode> XMLParser::parseElement()
+ {
++    // Subsequent DOM operations also recurse, so bound the whole tree's
++    // depth before constructing it from untrusted template or saved XML.
++    if (scopes.size() >= 256) {
++        fail("XML nested too deeply");
++        return nullptr;
++    }
+     // pos is just after '<'
+     const std::string qname = parseName();
+     if (qname.empty()) {
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index 2607aa3..127dde6 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -690,7 +690,8 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub
+             dict += " /V " + pdfTextString(*raw);
+         }
+     } else {
+-        const XFANode *te = field->firstChild("ui")->firstChild(ui);
++        const XFANode *uiNode = field->firstChild("ui");
++        const XFANode *te = uiNode ? uiNode->firstChild(ui) : nullptr;
+         if (te && te->getAttr("multiLine", "0") == "1") {
+             ff |= 4096;
+         }
+-- 
+2.43.0
+

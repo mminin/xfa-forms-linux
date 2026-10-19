@@ -1,0 +1,36 @@
+From ea98d0940b78c227608c5e2c7b2b1916271422c3 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Fri, 16 Oct 2026 17:35:29 -0700
+Subject: [PATCH] pdfxfa: Report errors when flushing output on close
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ utils/pdfxfa.cc | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/utils/pdfxfa.cc b/utils/pdfxfa.cc
+index 5b44896..7ab63e9 100644
+--- a/utils/pdfxfa.cc
++++ b/utils/pdfxfa.cc
+@@ -159,7 +159,13 @@ int main(int argc, char *argv[])
+         fprintf(stderr, "Cannot write %s\n", files[1].c_str());
+         return 1;
+     }
+-    const bool ok = fwrite(pdf.data(), 1, pdf.size(), f) == pdf.size();
+-    fclose(f);
++    bool ok = fwrite(pdf.data(), 1, pdf.size(), f) == pdf.size();
++    // Buffered writes can succeed until the stream is flushed on close.
++    if (fclose(f) != 0) {
++        ok = false;
++    }
++    if (!ok) {
++        fprintf(stderr, "Cannot write %s\n", files[1].c_str());
++    }
+     return ok ? status : 1;
+ }
+-- 
+2.43.0
+

@@ -25,12 +25,12 @@ Patch numbers refer to the current series in `patches/`.
 | Contributor / assistant | Work |
 |---|---|
 | Human maintainer, mminin | Directed the work, provided requirements and interactive feedback, and owns review, publication and maintenance. |
-| Claude Opus 5.5, as credited in existing commit trailers | Initial XFA engine, detection and rendering APIs, scripting, layout, initial Evince integration and fixes through Poppler 0007 and Evince 0006; later source-package cleanup, the federal-form corpus, Poppler 0010–0021 (images, tables, scripting, data DOM, FormCalc, validation, barcodes, formatting, pagination, focus and dialog API) and Evince 0009 (script-requested focus). |
+| Claude Opus 5.5, as credited in existing commit trailers | Initial XFA engine, detection and rendering APIs, scripting, layout, initial Evince integration and fixes through Poppler 0007 and Evince 0006; later source-package cleanup, the federal-form corpus, Poppler 0010–0021 (images, tables, scripting, data DOM, FormCalc, validation, barcodes, formatting, pagination, focus and dialog API), Poppler 0026 (truncated images) and Evince 0009 (script-requested focus). |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0008: preserve radio-button appearance states in ordinary PDF exports, with save/reopen regression coverage. |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0009: save and restore the live XFA form, scripts and form state; CLI support and regression coverage for saving, reopening and generating output again. |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Evince 0007: complete editor restoration after re-rendering, including deferred combo-close callbacks, allocation and stale focus handling. |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Evince 0008: make Select All select text in the active form editor. |
-| OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0022–0023 and Evince 0010: complete the interactive question/prompt UI, exclude waiting time from script deadlines, preserve callback lifetimes and test callback replacement, cancellation and re-rendering. |
+| OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0022–0025 and Evince 0010–0011: complete the interactive question/prompt UI, exclude waiting time from script deadlines, preserve callback lifetimes and test callback replacement, cancellation and re-rendering; reject corrupt state, deep nesting and output errors; commit editors outside focus transitions. |
 
 Codex also added the focus regression driver (`tools/headless/check-focus.py`),
 fixed headless test paths and metadata placement, implemented the desktop launcher

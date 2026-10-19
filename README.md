@@ -168,6 +168,9 @@ Poppler (`patches/poppler/`, about 13,100 added lines):
 | 0021 | Viewers answer the questions and prompts of scripts (glib API) |
 | 0022 | Exclude time waiting for a dialog from script deadlines; keep callbacks alive while answering |
 | 0023 | Test replacing dialog callbacks while a question is being answered |
+| 0024 | Reject corrupt saved state; handle deeply nested or incomplete templates |
+| 0025 | `pdfxfa` reports errors when flushing its output |
+| 0026 | Refuse truncated TIFF and GIF images, which could claim huge sizes |
 
 Evince (`patches/evince/`, about 1,000 added lines):
 
@@ -182,6 +185,7 @@ Evince (`patches/evince/`, about 1,000 added lines):
 | 0008 | Ctrl+A selects the text of the field being edited, not the whole document |
 | 0009 | Move to the field that form scripts ask for, such as the first one to correct |
 | 0010 | Show script questions and text prompts, returning the user's answer or cancellation |
+| 0011 | Commit form editors outside GTK focus transitions |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.
@@ -202,7 +206,7 @@ worth considering.
 
 Most of this code was written with AI coding assistants: Anthropic's Claude (commits
 carrying a `Co-Authored-By: Claude` line) and OpenAI Codex using **GPT-6.1 Sol**
-(`gpt-6.1-sol`, reasoning effort `high`; Poppler 0008–0009 and 0022–0023; Evince 0007–0008 and 0010).
+(`gpt-6.1-sol`, reasoning effort `high`; Poppler 0008–0009 and 0022–0025; Evince 0007–0008 and 0010–0011).
 The model and effort were verified against the local Codex session records.
 The [PR plan](PR_PLAN.md) records the contribution breakdown and attribution to
 carry into upstream submissions. The human maintainer, mminin <mminin2010@gmail.com>, directed
