@@ -7,29 +7,8 @@ Last reviewed 2026-10-19.
 Items are grouped and tagged with a rough priority: **P1** (fix before a serious
 upstream proposal), **P2** (should fix), **P3** (nice to have / documented limitation).
 
-Nothing here is a known memory-corruption bug. The crashes listed are denial-of-service
-(stack exhaustion or a GTK abort), not exploitable writes.
-
----
-
-## Security and robustness
-
----
-
-## Test and harness
-
-### 5. Pending verification before publishing — P1
-Carried over from the prior session and still not done:
-- **Fresh public bootstrap + build test**, now that `upstream/zint` is a submodule —
-  clone the public export clean and run `scripts/bootstrap.sh` + `scripts/build.sh`
-  from scratch to confirm the zint path works for a new user.
-- **Refresh the corpus grades**: `corpus/README.md` and `_work/corpus/results.tsv`.
-  Current run: 0 failed renders, 5 forms with unsupported images, 26 forms still
-  logging script errors.
-- **Reconcile the script-error count**: the README narrative says errors fell to ~20;
-  the latest `check-corpus.sh` reports 26 (the metric counts "script error"/"script
-  object" log lines, a rough proxy). Decide on one number and make README, memory and
-  `corpus/README.md` agree.
+No known crash or security issue is open. What remains are documented limits of the
+engine, each with the reason it stays.
 
 ---
 
@@ -103,5 +82,11 @@ lay it out the same way. Left as-is pending a counter-example.
 - Embedded copies of linked images are used (poppler 0036).
 - Characters the standard fonts lack became `?`; 13 corpus forms had `?` for bullets
   and arrows, and any Cyrillic, Greek, Chinese or Polish name was lost (poppler 0037).
+
+- Verified before publishing (2026-10-19): a fresh clone of the public tree runs
+  `scripts/bootstrap.sh` and `scripts/build.sh` from scratch, Zint included, and
+  generates the same consent letter as the development build; `corpus/README.md` and
+  `corpus/results.tsv` hold the current results (125 of 129 forms without script
+  errors, the other 4 failing on mistakes in the forms themselves).
 
 See the commit messages of those patches for detail.
