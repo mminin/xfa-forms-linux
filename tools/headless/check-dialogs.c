@@ -336,6 +336,21 @@ static void on_external_link (EvView *view, EvLinkAction *action, gpointer data)
     ++*(int *) data;
 }
 
+typedef struct {
+    int count;
+    gchar *site;
+    gboolean allowed;
+} Remembered;
+
+static void on_site_remembered (EvView *view, const gchar *site, gboolean allowed, gpointer data)
+{
+    Remembered *remembered = data;
+    ++remembered->count;
+    g_free (remembered->site);
+    remembered->site = g_strdup (site);
+    remembered->allowed = allowed;
+}
+
 /* Drive the field's exit script (which calls app.launchURL) by leaving the
  * entry, then pump the loop so apply_form_changes drains the URL request. */
 static void drive_url (GtkWidget *view, GtkWidget *entry, GtkWidget *button,
@@ -376,6 +391,7 @@ static void test_launch_url (void)
     GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *button = gtk_button_new_with_label ("Leave the field");
     int opened = 0;
+    Remembered remembered = { 0, NULL, FALSE };
 
     g_object_ref_sink (window);
     gtk_window_set_default_size (GTK_WINDOW (window), 800, 900);
@@ -388,6 +404,7 @@ static void test_launch_url (void)
     gtk_window_set_child (GTK_WINDOW (window), box);
     gtk_window_present (GTK_WINDOW (window));
     g_signal_connect (view, "external-link", G_CALLBACK (on_external_link), &opened);
+    g_signal_connect (view, "form-url-site-remembered", G_CALLBACK (on_site_remembered), &remembered);
 
     GtkWidget *entry = NULL;
     for (int i = 0; i < 500 && !entry; ++i) {
@@ -412,12 +429,105 @@ static void test_launch_url (void)
     drive_url (view, entry, button, &allow, &opened);
     g_assert_cmpint (allow.seen, ==, 1);
     g_assert_cmpint (opened, ==, 1);
+    g_assert_cmpint (remembered.count, ==, 1);
+    g_assert_cmpstr (remembered.site, ==, "example.com");
+    g_assert_true (remembered.allowed);
 
     /* Remembered: no further warning, and the URL still opens. */
     UrlAnswer again = { URL_BLOCK, FALSE, 0 };
     drive_url (view, entry, button, &again, &opened);
     g_assert_cmpint (again.seen, ==, 0);
     g_assert_cmpint (opened, ==, 2);
+
+    /* Sites kept by the application replace the remembered ones, and match
+     * without regard to case: a blocked site opens nothing, silently. */
+    const gchar *blocked[] = { "Example.COM", NULL };
+    ev_view_set_form_url_sites (EV_VIEW (view), NULL, blocked);
+    UrlAnswer listed = { URL_ALLOW, FALSE, 0 };
+    drive_url (view, entry, button, &listed, &opened);
+    g_assert_cmpint (listed.seen, ==, 0);
+    g_assert_cmpint (opened, ==, 2);
+
+    /* Unlisted sites follow the policy. */
+    ev_view_set_form_url_sites (EV_VIEW (view), NULL, NULL);
+    ev_view_set_form_url_policy (EV_VIEW (view), EV_FORM_URL_POLICY_ALLOW);
+    UrlAnswer open_all = { URL_BLOCK, FALSE, 0 };
+    drive_url (view, entry, button, &open_all, &opened);
+    g_assert_cmpint (open_all.seen, ==, 0);
+    g_assert_cmpint (opened, ==, 3);
+    ev_view_set_form_url_policy (EV_VIEW (view), EV_FORM_URL_POLICY_BLOCK);
+    UrlAnswer block_all = { URL_ALLOW, FALSE, 0 };
+    drive_url (view, entry, button, &block_all, &opened);
+    g_assert_cmpint (block_all.seen, ==, 0);
+    g_assert_cmpint (opened, ==, 3);
+    g_assert_cmpint (remembered.count, ==, 1);
+    g_free (remembered.site);
+
+    gtk_window_destroy (GTK_WINDOW (window));
+    g_object_unref (window);
+    g_object_unref (model);
+    g_unlink (path);
+    g_free (uri);
+    g_free (path);
+}
+
+static const char *tab_xdp =
+    "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
+    "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
+    "<subform name=\"form1\" layout=\"tb\">"
+    "<pageSet><pageArea name=\"Page1\"><contentArea x=\"1in\" y=\"1in\" w=\"6in\" h=\"9in\"/>"
+    "<medium short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
+    "<field name=\"a\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui><value><text>first</text></value></field>"
+    "</subform></template></xdp:xdp>";
+
+/* Tab saves the field being left only once GTK has finished moving the focus.
+ * With a single field, Tab comes back to it and opens its editor before the
+ * new value is saved, and the form needs no new layout. The editor must then
+ * show the saved value, not the one it opened with. */
+static void test_tab_refresh (void)
+{
+    gchar *path = write_fixture_xdp (tab_xdp);
+    gchar *uri = g_filename_to_uri (path, NULL, NULL);
+    GError *error = NULL;
+    EvDocument *document = ev_document_factory_get_document (uri, &error);
+    g_assert_no_error (error);
+    EvDocumentModel *model = ev_document_model_new ();
+    GtkWidget *view = GTK_WIDGET (ev_view_new ());
+    GtkWidget *window = gtk_window_new ();
+
+    g_object_ref_sink (window);
+    gtk_window_set_default_size (GTK_WINDOW (window), 800, 900);
+    ev_document_model_set_document (model, document);
+    ev_view_set_model (EV_VIEW (view), model);
+    g_object_unref (document);
+    gtk_window_set_child (GTK_WINDOW (window), view);
+    gtk_window_present (GTK_WINDOW (window));
+
+    GtkWidget *entry = NULL;
+    for (int i = 0; i < 500 && !entry; ++i) {
+        while (g_main_context_iteration (NULL, FALSE)) { }
+        entry = find_entry (view);
+        if (!entry || g_strcmp0 (gtk_editable_get_text (GTK_EDITABLE (entry)), "first") != 0) {
+            gtk_widget_child_focus (view, GTK_DIR_TAB_FORWARD);
+            entry = NULL;
+            g_usleep (10000);
+        }
+    }
+    g_assert_nonnull (entry);
+    gtk_editable_set_text (GTK_EDITABLE (entry), "copied");
+    gtk_widget_child_focus (window, GTK_DIR_TAB_FORWARD);
+
+    GtkWidget *next = NULL;
+    for (int i = 0; i < 300; ++i) {
+        while (g_main_context_iteration (NULL, FALSE)) { }
+        next = find_entry (view);
+        if (next && next != entry && g_strcmp0 (gtk_editable_get_text (GTK_EDITABLE (next)), "copied") == 0)
+            break;
+        g_usleep (10000);
+    }
+    g_assert_nonnull (next);
+    g_assert_true (next != entry);
+    g_assert_cmpstr (gtk_editable_get_text (GTK_EDITABLE (next)), ==, "copied");
 
     gtk_window_destroy (GTK_WINDOW (window));
     g_object_unref (window);
@@ -435,6 +545,7 @@ int main (int argc, char **argv)
     g_test_add_func ("/view/xfa-dialogs", test_dialogs);
     g_test_add_func ("/view/editor-document-change", test_editor_document_change);
     g_test_add_func ("/view/launch-url", test_launch_url);
+    g_test_add_func ("/view/tab-refresh", test_tab_refresh);
     int result = g_test_run ();
     ev_shutdown ();
     return result;

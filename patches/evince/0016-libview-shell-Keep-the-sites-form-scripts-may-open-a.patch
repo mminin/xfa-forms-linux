@@ -1,0 +1,420 @@
+From a2ccf7684bd2ea2a46d1ae3609fd54b58e299c7b Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 12:32:21 -0700
+Subject: [PATCH] libview, shell: Keep the sites form scripts may open across
+ sessions
+
+Choices to remember for a site that a form's scripts asked to open were
+kept only in the view, and lost when the window closed. Adobe Reader
+keeps them, and lets the user or an administrator allow or block sites
+and choose what happens with other sites.
+
+Add ev_view_set_form_url_policy() and ev_view_set_form_url_sites() to
+EvView, and the EvView::form-url-site-remembered signal. Evince keeps the
+sites in the new form-url-allowed-sites and form-url-blocked-sites
+settings, and the policy for other sites (ask, allow or block) in
+form-url-policy. Locking the keys in dconf fixes them for all users. Host
+names match without regard to case, and a site in both lists is blocked.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ data/org.gnome.Evince.gschema.xml |  21 ++++++
+ libview/ev-view-private.h         |   6 +-
+ libview/ev-view.c                 | 106 +++++++++++++++++++++++++++---
+ libview/ev-view.h                 |  25 +++++++
+ shell/ev-window.c                 |  69 +++++++++++++++++++
+ 5 files changed, 215 insertions(+), 12 deletions(-)
+
+diff --git a/data/org.gnome.Evince.gschema.xml b/data/org.gnome.Evince.gschema.xml
+index 92a813d..86ad5ab 100644
+--- a/data/org.gnome.Evince.gschema.xml
++++ b/data/org.gnome.Evince.gschema.xml
+@@ -8,6 +8,12 @@
+     <value nick="automatic" value="3"/>
+   </enum>
+ 
++  <enum id="org.gnome.Evince.FormUrlPolicy">
++    <value nick="ask" value="0"/>
++    <value nick="allow" value="1"/>
++    <value nick="block" value="2"/>
++  </enum>
++
+   <schema id="org.gnome.Evince" path="/org/gnome/evince/" gettext-domain="evince">
+     <key name="override-restrictions" type="b">
+       <default>true</default>
+@@ -40,6 +46,21 @@
+       <default>true</default>
+       <summary>Allow links to change the zoom level.</summary>
+     </key>
++    <key name="form-url-policy" enum="org.gnome.Evince.FormUrlPolicy">
++      <default>'ask'</default>
++      <summary>What to do when a form asks to open a web site</summary>
++      <description>When the scripts of a form ask to open a web site that is in neither form-url-allowed-sites nor form-url-blocked-sites: “ask” asks first, “allow” opens it and “block” refuses it. Addresses other than web sites are always refused.</description>
++    </key>
++    <key name="form-url-allowed-sites" type="as">
++      <default>[]</default>
++      <summary>Web sites that forms may open</summary>
++      <description>Host names that the scripts of forms may open without asking.</description>
++    </key>
++    <key name="form-url-blocked-sites" type="as">
++      <default>[]</default>
++      <summary>Web sites that forms may not open</summary>
++      <description>Host names that the scripts of forms may never open. A site in both lists is blocked.</description>
++    </key>
+     <child name="default" schema="org.gnome.Evince.Default"/>
+   </schema>
+ 
+diff --git a/libview/ev-view-private.h b/libview/ev-view-private.h
+index 5ac712d..2762bdc 100644
+--- a/libview/ev-view-private.h
++++ b/libview/ev-view-private.h
+@@ -239,9 +239,11 @@ typedef struct _EvViewPrivate {
+ 	gboolean form_dialog_running;
+ 	/* The field to edit again once the changed document is loaded */
+ 	gchar *refocus_field_name;
+-	/* Per-site Allow/Block choices a user asked to remember for script-
+-	 * requested URLs: host string -> GINT_TO_POINTER(1 allow, 2 block) */
++	/* Sites that form scripts may or may not open: lowercase host ->
++	 * GINT_TO_POINTER (EV_FORM_URL_ALLOW or EV_FORM_URL_BLOCK), and what
++	 * to do for other sites */
+ 	GHashTable *form_url_sites;
++	EvFormUrlPolicy form_url_policy;
+ 
+ 	/* Synctex */
+ 	EvMapping *synctex_result;
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 4fefa02..b33fc09 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -63,6 +63,7 @@ enum {
+ 	SIGNAL_MOVE_CURSOR,
+ 	SIGNAL_CURSOR_MOVED,
+ 	SIGNAL_ACTIVATE,
++	SIGNAL_FORM_URL_SITE_REMEMBERED,
+ 	N_SIGNALS
+ };
+ 
+@@ -2697,9 +2698,11 @@ ev_view_focus_form_field_by_name (EvView      *view,
+ }
+ 
+ /* A form script asking to open a URL is gated like Adobe Reader's Trust
+- * Manager: the user is warned and chooses Allow or Block, and may remember
+- * the choice for that site. Only http(s) links are offered; other schemes
+- * are refused, as Reader refuses non-web targets. */
++ * Manager: sites can be allowed or blocked, and for other sites the policy
++ * says whether to open them, refuse them, or warn the user, who chooses
++ * Allow or Block and may remember the choice for the site. Only http(s)
++ * links are offered; other schemes are refused, as Reader refuses non-web
++ * targets. */
+ #define EV_FORM_URL_BLOCK 1
+ #define EV_FORM_URL_ALLOW 2
+ 
+@@ -2727,8 +2730,8 @@ ev_view_url_confirm_cancel (GtkWidget *widget, EvViewUrlConfirm *state)
+ 	ev_view_url_confirm_response (NULL, EV_FORM_URL_BLOCK, state);
+ }
+ 
+-/* TRUE if the script-requested uri should be opened. Prompts unless the site
+- * has a remembered decision; a refused scheme or a lost document means no. */
++/* TRUE if the script-requested uri should be opened. A refused scheme or a
++ * lost document means no. */
+ static gboolean
+ ev_view_confirm_script_url (EvView *view, const gchar *uri)
+ {
+@@ -2737,6 +2740,7 @@ ev_view_confirm_script_url (EvView *view, const gchar *uri)
+ 	g_autoptr (GUri) parsed = g_uri_parse (uri, G_URI_FLAGS_NONE, NULL);
+ 	const gchar *scheme = parsed ? g_uri_get_scheme (parsed) : NULL;
+ 	const gchar *host = parsed ? g_uri_get_host (parsed) : NULL;
++	g_autofree gchar *site = NULL;
+ 	GtkWidget *dialog, *content, *label, *remember;
+ 	g_autofree gchar *message = NULL;
+ 	g_autoptr (EvDocumentModel) model = NULL;
+@@ -2747,11 +2751,15 @@ ev_view_confirm_script_url (EvView *view, const gchar *uri)
+ 		return FALSE;
+ 	if (!host || !*host)
+ 		return FALSE;
++	site = g_ascii_strdown (host, -1);
+ 
+-	/* A choice the user asked to remember needs no further prompt. */
+ 	if (priv->form_url_sites &&
+-	    g_hash_table_lookup_extended (priv->form_url_sites, host, NULL, &decision))
++	    g_hash_table_lookup_extended (priv->form_url_sites, site, NULL, &decision))
+ 		return GPOINTER_TO_INT (decision) == EV_FORM_URL_ALLOW;
++	if (priv->form_url_policy == EV_FORM_URL_POLICY_ALLOW)
++		return TRUE;
++	if (priv->form_url_policy == EV_FORM_URL_POLICY_BLOCK)
++		return FALSE;
+ 
+ 	if (priv->form_dialog_running || !GTK_IS_WINDOW (root) || !priv->model)
+ 		return FALSE;
+@@ -2780,7 +2788,7 @@ ev_view_confirm_script_url (EvView *view, const gchar *uri)
+ 	gtk_label_set_xalign (GTK_LABEL (label), 0);
+ 	gtk_label_set_selectable (GTK_LABEL (label), TRUE);
+ 	gtk_box_append (GTK_BOX (content), label);
+-	remember = gtk_check_button_new_with_label (_("Remember this action for this site"));
++	remember = gtk_check_button_new_with_label (_("Remember this action for this site for all documents"));
+ 	gtk_box_append (GTK_BOX (content), remember);
+ 	gtk_dialog_add_buttons (GTK_DIALOG (dialog),
+ 		_("_Block"), EV_FORM_URL_BLOCK, _("_Allow"), EV_FORM_URL_ALLOW, NULL);
+@@ -2795,10 +2803,11 @@ ev_view_confirm_script_url (EvView *view, const gchar *uri)
+ 		g_main_loop_run (state.loop);
+ 	/* Remember only a deliberate choice, never a dialog torn down because the
+ 	 * document changed under it. */
+-	if (state.user && gtk_check_button_get_active (GTK_CHECK_BUTTON (remember))) {
++	gboolean remembered = state.user && gtk_check_button_get_active (GTK_CHECK_BUTTON (remember));
++	if (remembered) {
+ 		if (!priv->form_url_sites)
+ 			priv->form_url_sites = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+-		g_hash_table_insert (priv->form_url_sites, g_strdup (host), GINT_TO_POINTER (state.answer));
++		g_hash_table_insert (priv->form_url_sites, g_strdup (site), GINT_TO_POINTER (state.answer));
+ 	}
+ 	g_signal_handlers_disconnect_by_data (model, &state);
+ 	g_signal_handlers_disconnect_by_data (view, &state);
+@@ -2807,6 +2816,10 @@ ev_view_confirm_script_url (EvView *view, const gchar *uri)
+ 	g_object_unref (dialog);
+ 	g_main_loop_unref (state.loop);
+ 	priv->form_dialog_running = FALSE;
++	/* Let the application keep the choice for later sessions */
++	if (remembered)
++		g_signal_emit (view, signals[SIGNAL_FORM_URL_SITE_REMEMBERED], 0,
++			       site, state.answer == EV_FORM_URL_ALLOW);
+ 
+ 	return state.user && state.answer == EV_FORM_URL_ALLOW;
+ }
+@@ -8687,6 +8700,26 @@ ev_view_class_init (EvViewClass *class)
+ 		         g_cclosure_marshal_VOID__OBJECT,
+ 		         G_TYPE_NONE, 1,
+ 		         G_TYPE_OBJECT);
++	/**
++	 * EvView::form-url-site-remembered:
++	 * @view: the #EvView
++	 * @site: the host name of the site, in lowercase
++	 * @allowed: whether the user allowed the site or blocked it
++	 *
++	 * Emitted when the scripts of a form asked to open a web site and the
++	 * user asked to remember their choice for that site, so that the
++	 * application can keep it and pass it back with
++	 * ev_view_set_form_url_sites().
++	 *
++	 * Since: 49
++	 */
++	signals[SIGNAL_FORM_URL_SITE_REMEMBERED] = g_signal_new ("form-url-site-remembered",
++			 G_TYPE_FROM_CLASS (object_class),
++			 G_SIGNAL_RUN_LAST,
++			 0, NULL, NULL, NULL,
++			 G_TYPE_NONE, 2,
++			 G_TYPE_STRING,
++			 G_TYPE_BOOLEAN);
+ 	signals[SIGNAL_POPUP_MENU] = g_signal_new ("popup",
+ 	  	         G_TYPE_FROM_CLASS (object_class),
+ 		         G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
+@@ -10575,6 +10608,59 @@ ev_view_set_allow_links_change_zoom (EvView *view, gboolean allowed)
+ 	priv->allow_links_change_zoom = allowed;
+ }
+ 
++/**
++ * ev_view_set_form_url_policy:
++ * @view: a #EvView
++ * @policy: what to do with sites that are neither allowed nor blocked
++ *
++ * Sets what happens when the scripts of a form ask to open a web site that
++ * is not listed by ev_view_set_form_url_sites(). The default is to ask the
++ * user. Addresses other than http and https are always refused.
++ *
++ * Since: 49
++ */
++void
++ev_view_set_form_url_policy (EvView         *view,
++			     EvFormUrlPolicy policy)
++{
++	g_return_if_fail (EV_IS_VIEW (view));
++	EvViewPrivate *priv = GET_PRIVATE (view);
++
++	priv->form_url_policy = policy;
++}
++
++/**
++ * ev_view_set_form_url_sites:
++ * @view: a #EvView
++ * @allowed: (nullable) (array zero-terminated=1): host names that the
++ *   scripts of forms may open without asking
++ * @blocked: (nullable) (array zero-terminated=1): host names that the
++ *   scripts of forms may never open; these win over @allowed
++ *
++ * Replaces the sites the user has allowed or blocked, such as those kept
++ * from #EvView::form-url-site-remembered. Host names match without regard
++ * to case.
++ *
++ * Since: 49
++ */
++void
++ev_view_set_form_url_sites (EvView              *view,
++			    const gchar * const *allowed,
++			    const gchar * const *blocked)
++{
++	g_return_if_fail (EV_IS_VIEW (view));
++	EvViewPrivate *priv = GET_PRIVATE (view);
++
++	g_clear_pointer (&priv->form_url_sites, g_hash_table_destroy);
++	priv->form_url_sites = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++	for (const gchar * const *site = allowed; site && *site; site++)
++		g_hash_table_insert (priv->form_url_sites, g_ascii_strdown (*site, -1),
++				     GINT_TO_POINTER (EV_FORM_URL_ALLOW));
++	for (const gchar * const *site = blocked; site && *site; site++)
++		g_hash_table_insert (priv->form_url_sites, g_ascii_strdown (*site, -1),
++				     GINT_TO_POINTER (EV_FORM_URL_BLOCK));
++}
++
+ gboolean
+ ev_view_get_allow_links_change_zoom (EvView *view)
+ {
+diff --git a/libview/ev-view.h b/libview/ev-view.h
+index 7f54a8d..d956bcf 100644
+--- a/libview/ev-view.h
++++ b/libview/ev-view.h
+@@ -55,6 +55,31 @@ void            ev_view_set_allow_links_change_zoom (EvView  *view,
+ EV_PUBLIC
+ gboolean        ev_view_get_allow_links_change_zoom (EvView  *view);
+ 
++/**
++ * EvFormUrlPolicy:
++ * @EV_FORM_URL_POLICY_ASK: ask the user before opening the site
++ * @EV_FORM_URL_POLICY_ALLOW: open the site without asking
++ * @EV_FORM_URL_POLICY_BLOCK: never open the site
++ *
++ * What to do when the scripts of a form ask to open a web site that is
++ * neither allowed nor blocked by ev_view_set_form_url_sites().
++ *
++ * Since: 49
++ */
++typedef enum {
++	EV_FORM_URL_POLICY_ASK,
++	EV_FORM_URL_POLICY_ALLOW,
++	EV_FORM_URL_POLICY_BLOCK
++} EvFormUrlPolicy;
++
++EV_PUBLIC
++void            ev_view_set_form_url_policy (EvView          *view,
++					     EvFormUrlPolicy  policy);
++EV_PUBLIC
++void            ev_view_set_form_url_sites  (EvView              *view,
++					     const gchar * const *allowed,
++					     const gchar * const *blocked);
++
+ /* Clipboard */
+ EV_PUBLIC
+ void		ev_view_copy		  (EvView         *view);
+diff --git a/shell/ev-window.c b/shell/ev-window.c
+index e75984e..f9c53d9 100644
+--- a/shell/ev-window.c
++++ b/shell/ev-window.c
+@@ -236,6 +236,9 @@ typedef struct {
+ #define GS_LAST_DOCUMENT_DIRECTORY "document-directory"
+ #define GS_LAST_PICTURES_DIRECTORY "pictures-directory"
+ #define GS_ALLOW_LINKS_CHANGE_ZOOM "allow-links-change-zoom"
++#define GS_FORM_URL_POLICY        "form-url-policy"
++#define GS_FORM_URL_ALLOWED_SITES "form-url-allowed-sites"
++#define GS_FORM_URL_BLOCKED_SITES "form-url-blocked-sites"
+ 
+ #define LINKS_SIDEBAR_ID "links"
+ #define THUMBNAILS_SIDEBAR_ID "thumbnails"
+@@ -1463,6 +1466,22 @@ allow_links_change_zoom_changed (GSettings *settings,
+ 	ev_view_set_allow_links_change_zoom (EV_VIEW (priv->view), allow_links_change_zoom);
+ }
+ 
++static void
++form_url_settings_changed (GSettings *settings,
++			   gchar     *key,
++			   EvWindow  *ev_window)
++{
++	EvWindowPrivate *priv = GET_PRIVATE (ev_window);
++	g_auto (GStrv) allowed = g_settings_get_strv (settings, GS_FORM_URL_ALLOWED_SITES);
++	g_auto (GStrv) blocked = g_settings_get_strv (settings, GS_FORM_URL_BLOCKED_SITES);
++
++	ev_view_set_form_url_policy (EV_VIEW (priv->view),
++				     g_settings_get_enum (settings, GS_FORM_URL_POLICY));
++	ev_view_set_form_url_sites (EV_VIEW (priv->view),
++				    (const gchar * const *) allowed,
++				    (const gchar * const *) blocked);
++}
++
+ static void
+ ev_window_setup_default (EvWindow *ev_window)
+ {
+@@ -1535,10 +1554,56 @@ ev_window_ensure_settings (EvWindow *ev_window)
+ 			  "changed::"GS_ALLOW_LINKS_CHANGE_ZOOM,
+ 			  G_CALLBACK (allow_links_change_zoom_changed),
+ 			  ev_window);
++	for (guint i = 0; i < 3; i++) {
++		const gchar *keys[] = { GS_FORM_URL_POLICY, GS_FORM_URL_ALLOWED_SITES,
++					GS_FORM_URL_BLOCKED_SITES };
++		g_autofree gchar *signal = g_strconcat ("changed::", keys[i], NULL);
++
++		g_signal_connect (priv->settings, signal,
++				  G_CALLBACK (form_url_settings_changed), ev_window);
++	}
+ 
+         return priv->settings;
+ }
+ 
++/* Keeps a site the user allowed or blocked for the scripts of forms, unless
++ * an administrator has locked the lists. */
++static void
++view_form_url_site_remembered_cb (EvView      *view,
++				  const gchar *site,
++				  gboolean     allowed,
++				  EvWindow    *ev_window)
++{
++	GSettings *settings = ev_window_ensure_settings (ev_window);
++	const gchar *add_key = allowed ? GS_FORM_URL_ALLOWED_SITES : GS_FORM_URL_BLOCKED_SITES;
++	const gchar *remove_key = allowed ? GS_FORM_URL_BLOCKED_SITES : GS_FORM_URL_ALLOWED_SITES;
++	g_auto (GStrv) add = NULL;
++	g_auto (GStrv) remove = NULL;
++	g_autoptr (GStrvBuilder) added = g_strv_builder_new ();
++	g_autoptr (GStrvBuilder) kept = g_strv_builder_new ();
++
++	if (!g_settings_is_writable (settings, add_key) ||
++	    !g_settings_is_writable (settings, remove_key))
++		return;
++
++	add = g_settings_get_strv (settings, add_key);
++	remove = g_settings_get_strv (settings, remove_key);
++	for (gchar **s = add; *s; s++)
++		if (g_ascii_strcasecmp (*s, site) != 0)
++			g_strv_builder_add (added, *s);
++	g_strv_builder_add (added, site);
++	for (gchar **s = remove; *s; s++)
++		if (g_ascii_strcasecmp (*s, site) != 0)
++			g_strv_builder_add (kept, *s);
++
++	g_auto (GStrv) new_add = g_strv_builder_end (added);
++	g_auto (GStrv) new_remove = g_strv_builder_end (kept);
++	g_settings_delay (settings);
++	g_settings_set_strv (settings, add_key, (const gchar * const *) new_add);
++	g_settings_set_strv (settings, remove_key, (const gchar * const *) new_remove);
++	g_settings_apply (settings);
++}
++
+ static void
+ ev_window_setup_document (EvWindow *ev_window)
+ {
+@@ -7120,6 +7185,7 @@ ev_window_init (EvWindow *ev_window)
+ 				     GS_ALLOW_LINKS_CHANGE_ZOOM);
+ 	ev_view_set_allow_links_change_zoom (EV_VIEW (priv->view),
+ 				     allow_links_change_zoom);
++	form_url_settings_changed (ev_window_ensure_settings (ev_window), NULL, ev_window);
+ 	ev_view_set_model (EV_VIEW (priv->view), priv->model);
+ 
+ 
+@@ -7130,6 +7196,9 @@ ev_window_init (EvWindow *ev_window)
+ 	g_signal_connect_object (priv->view, "handle-link",
+ 			         G_CALLBACK (view_handle_link_cb),
+ 			         ev_window, 0);
++	g_signal_connect_object (priv->view, "form-url-site-remembered",
++				 G_CALLBACK (view_form_url_site_remembered_cb),
++				 ev_window, 0);
+ 	g_signal_connect_object (priv->view, "popup",
+ 				 G_CALLBACK (view_menu_popup_cb),
+ 				 ev_window, 0);
+-- 
+2.43.0
+

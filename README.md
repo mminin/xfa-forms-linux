@@ -193,6 +193,8 @@ Evince (`patches/evince/`, about 1,150 added lines):
 | 0012 | Unparent form editors before the view is finalized, fixing a teardown crash |
 | 0013 | Confirm script-requested URLs with an Allow/Block prompt, like Reader's Trust Manager |
 | 0014 | Allocate form editors at least their minimum size, also while a form reloads |
+| 0015 | Show the saved value in a form editor that opened before the save, as when Tab returns to the same field |
+| 0016 | Keep allowed and blocked sites for form scripts across sessions, with a policy for other sites (settings `form-url-*`) |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.

@@ -1,0 +1,89 @@
+From a2345f340b73b138efb8e777488a8143d222fb83 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 12:32:14 -0700
+Subject: [PATCH] libview: Show saved values in form editors opened before the
+ save
+
+Leaving a form field saves it only once GTK has finished moving the
+focus, so that scripts never run inside the focus change. When Tab came
+back to the same field, its new editor opened before the save and showed
+the old value over the newly saved one, and editing it started from the
+old text.
+
+Once a deferred save has run, show the current value in any open text
+editor that the user has not changed yet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libview/ev-view.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 10ee82a..4fefa02 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2537,6 +2537,7 @@ typedef struct {
+ 
+ static void ev_view_form_field_text_save (EvView *view, GtkWidget *widget);
+ static void ev_view_form_field_choice_save (EvView *view, GtkWidget *widget);
++static void ev_view_form_field_text_changed (GtkWidget *widget, EvFormField *field);
+ 
+ static EvViewFormEditorAction *
+ ev_view_form_editor_action_new (GtkWidget *widget, EvView *view, gboolean remove)
+@@ -2549,6 +2550,45 @@ ev_view_form_editor_action_new (GtkWidget *widget, EvView *view, gboolean remove
+ 	return action;
+ }
+ 
++/* Shows the current value of the fields in open text editors that the user
++ * has not changed yet. An editor can open while another one is still to be
++ * saved, as when Tab wraps around to the same field, and saving can run
++ * scripts that change other fields without replacing the document. */
++static void
++ev_view_refresh_form_editors (EvView *view)
++{
++	EvViewPrivate *priv = GET_PRIVATE (view);
++
++	for (GtkWidget *child = gtk_widget_get_first_child (GTK_WIDGET (view));
++	     child != NULL;
++	     child = gtk_widget_get_next_sibling (child)) {
++		EvFormField *field = g_object_get_data (G_OBJECT (child), "form-field");
++		g_autofree gchar *text = NULL;
++		const gchar *shown;
++		gint start, end;
++		gboolean all_selected;
++
++		if (!EV_IS_FORM_FIELD_TEXT (field) || field->changed || !GTK_IS_EDITABLE (child) ||
++		    g_object_get_data (G_OBJECT (child), "form-document") != priv->document)
++			continue;
++
++		text = ev_document_forms_form_field_text_get_text (EV_DOCUMENT_FORMS (priv->document), field);
++		shown = gtk_editable_get_text (GTK_EDITABLE (child));
++		if (g_strcmp0 (text ? text : "", shown) == 0)
++			continue;
++
++		all_selected = gtk_editable_get_selection_bounds (GTK_EDITABLE (child), &start, &end) &&
++			       start == 0 && end == g_utf8_strlen (shown, -1);
++		g_signal_handlers_block_by_func (child, ev_view_form_field_text_changed, field);
++		gtk_editable_set_text (GTK_EDITABLE (child), text ? text : "");
++		g_signal_handlers_unblock_by_func (child, ev_view_form_field_text_changed, field);
++		if (all_selected)
++			gtk_editable_select_region (GTK_EDITABLE (child), 0, -1);
++		g_free (EV_FORM_FIELD_TEXT (field)->text);
++		EV_FORM_FIELD_TEXT (field)->text = g_steal_pointer (&text);
++	}
++}
++
+ static void
+ ev_view_form_editor_action_idle (gpointer user_data)
+ {
+@@ -2565,6 +2605,7 @@ ev_view_form_editor_action_idle (gpointer user_data)
+ 	/* A deferred close must not remove an editor in a replacement document. */
+ 	if (action->remove && gtk_widget_get_parent (action->widget) == GTK_WIDGET (action->view))
+ 		ev_view_remove_all_form_fields (action->view);
++	ev_view_refresh_form_editors (action->view);
+ 	g_object_unref (action->widget);
+ 	g_object_unref (action->view);
+ 	g_free (action);
+-- 
+2.43.0
+

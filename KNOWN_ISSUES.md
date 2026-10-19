@@ -14,22 +14,6 @@ Nothing here is a known memory-corruption bug. The crashes listed are denial-of-
 
 ## Security and robustness
 
-### 2. URL "remember" is session-scoped, not persistent — P2
-Evince 0013 mirrors Adobe Reader's Trust Manager prompt (Allow/Block, "remember this
-site"), but the remembered per-host decisions live in an in-memory `GHashTable` on the
-`EvView` (`priv->form_url_sites`). They are lost when the window closes, and there is
-no global policy (Reader offers allow-all / block-all / ask, plus an admin-managed
-list).
-
-**Why it matters:** Acrobat/Reader parity is "follow the canon" per the user's
-instruction, and the canon persists the list across sessions and exposes a policy
-setting. The current gate is safe (it defaults to prompting) but forgets choices.
-
-**Fix:** persist the allow/block list (GSettings) and add a Trust-Manager-style
-preference. Decide whether "remember" should be app-wide (Reader) or per-window
-(current). Deferred intentionally for the first debut; prompt-every-session is the
-safe default.
-
 ---
 
 ## Test and harness
@@ -101,5 +85,10 @@ lay it out the same way. Left as-is pending a counter-example.
 - glib API docs warn hosts that script URLs are unchecked (poppler 0029).
 - Form editors allocated below their minimum size, or not at all while a form
   reloads, which crashed the `xfa-dialogs` headless test (Evince 0014).
+- A form editor reopened by Tab showed the field's old value over the saved one
+  (Evince 0015).
+- Remembered URL choices now persist in settings, with an ask/allow/block policy
+  for other sites that administrators can lock in dconf, as in Reader's Trust
+  Manager (Evince 0016).
 
 See the commit messages of those patches for detail.
