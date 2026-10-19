@@ -38,7 +38,8 @@ For the tested form, in the patched Evince:
   patched viewer; Adobe Reader and other viewers won't restore that state.
 - **Print** or export gives an ordinary PDF that opens anywhere, without scripts.
 
-Known gaps, most of them found with the [corpus](corpus/README.md):
+Known gaps, most of them found with the [corpus](corpus/README.md); the full
+developer list of what still needs fixing and why is in [KNOWN_ISSUES.md](KNOWN_ISSUES.md):
 
 - FormCalc runs translated to JavaScript, without SOM predicates (`a.[b > 1]`), the
   financial functions or picture-clause functions such as `Format()`.
