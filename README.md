@@ -45,8 +45,8 @@ developer list of what still needs fixing and why is in [KNOWN_ISSUES.md](KNOWN_
   financial functions or picture-clause functions such as `Format()`.
 - Data binding is simplified: values are matched to data by name, `dataRef` bindings
   are ignored, and the form's values are kept in the form, not in the data DOM.
-- Picture clauses support numbers, dates and text, not times, and symbols are English
-  or French.
+- Picture clauses take their names, symbols and default patterns from the form's
+  locales, with English and French built in for forms that define none.
 - Fonts map onto the 14 standard PDF fonts, with horizontal scaling for narrow
   and black faces. Nothing is embedded.
 - Images are drawn from JPEG, PNG, GIF, BMP and TIFF data; SVG and external
@@ -175,6 +175,7 @@ Poppler (`patches/poppler/`, about 13,200 added lines):
 | 0027 | Bound recursive tree walks so a script cannot overflow the stack |
 | 0028 | Compute image sizes in floating point, avoiding an integer overflow |
 | 0029 | Document that URLs from XFA scripts are unchecked (glib API) |
+| 0030 | Locale symbols and default patterns from the form's localeSet; time and date-time pictures; `null{}`/`zero{}` only for null and zero values |
 
 Evince (`patches/evince/`, about 1,150 added lines):
 

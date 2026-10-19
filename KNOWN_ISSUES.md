@@ -49,10 +49,6 @@ form's values are held in the form tree, not written through to the data DOM the
 a strict implementation would. **Why:** name-matching covered the corpus; `dataRef`
 forms will bind the wrong nodes or not at all.
 
-### 8. Picture clauses are partial — P3
-Numbers, dates and text only — not times — and symbol tables are English or French.
-**Why:** the tested forms are en/fr CA. Other locales format wrong.
-
 ### 9. Fonts are the 14 standard PDF fonts — P3
 No embedding; narrow/black faces are approximated with horizontal scaling. **Why:**
 embedding is a large addition. Glyph coverage and metrics will differ from Acrobat for
@@ -90,5 +86,9 @@ lay it out the same way. Left as-is pending a counter-example.
 - Remembered URL choices now persist in settings, with an ask/allow/block policy
   for other sites that administrators can lock in dconf, as in Reader's Trust
   Manager (Evince 0016).
+- Picture symbols and default patterns now come from the form's `<localeSet>`
+  (en_CA forms showed `date.short{}` as US `M/D/YY`), time and date-time pictures
+  are supported, and `null{}`/`zero{}` no longer swallow every value — 12 corpus
+  currency fields showed raw numbers (poppler 0030).
 
 See the commit messages of those patches for detail.

@@ -1,0 +1,1453 @@
+From a2a1318053d519557b8b0180a723bbd6be4c298c Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 12:59:25 -0700
+Subject: [PATCH] XFA: Take picture symbols from the form's locales; add time
+ pictures
+
+Default patterns and names were hard-coded for English as in the US, and
+French. Canadian English forms then showed date.short{} dates as M/D/YY
+instead of their locale's DD/MM/YY. Forms define their locales in a
+localeSet packet: read it, on top of built-in definitions for en_US,
+en_CA, fr_CA and fr_FR, and use its month, day, meridiem and era names,
+date, time and number patterns, and number and currency symbols. Locale
+number patterns show one group of digits, so widen them to take large
+values.
+
+An empty null{} alternative showed every value as it was, so pictures
+such as null{}|num{$z,zzz,zz9.zz} never formatted numbers. null{} now
+applies only to null values and zero{} only to zero.
+
+Add time{} and datetime{} pictures, with every hour symbol, minutes,
+seconds, thousandths, meridiems and zones as names (GMT, EST...) or
+offsets, and classify pictures without a category as numbers, dates,
+times or text from their symbols, as FormCalc's Format() and Parse()
+need.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c |  43 +++
+ poppler/XFAForm.cc     | 111 +++++-
+ poppler/XFAForm.h      |   4 +
+ poppler/XFAPicture.cc  | 858 +++++++++++++++++++++++++++++++++++------
+ poppler/XFAPicture.h   |  45 ++-
+ 5 files changed, 932 insertions(+), 129 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index e4700fd..2a316b5 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -1175,6 +1175,48 @@ static void test_default_ui(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* Default patterns and names come from the form's locales, then from the
++ * built-in ones; null{} and zero{} apply only to null and zero values. */
++static void test_locales(void)
++{
++    const char *xml = "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
++                      "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                      "<subform name=\"form1\" layout=\"tb\" locale=\"en_CA\"><pageSet><pageArea name=\"Page1\">"
++                      "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                      "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
++                      "<field name=\"amount\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><numericEdit/></ui>"
++                      "<format><picture>null{}|num{$z,zzz,zz9.zz}</picture></format><value><decimal>1234.5</decimal></value></field>"
++                      "<field name=\"nothing\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><numericEdit/></ui>"
++                      "<format><picture>null{}|zero{'nil'}|num.currency{}</picture></format><value><decimal>0</decimal></value></field>"
++                      "<field name=\"short\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><dateTimeEdit/></ui>"
++                      "<format><picture>date.short{}</picture></format><value><date>2024-03-05</date></value></field>"
++                      "<field name=\"long\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\" locale=\"fr_CA\"><ui><dateTimeEdit/></ui>"
++                      "<format><picture>date.long{}</picture></format><value><date>2024-03-05</date></value></field>"
++                      "<field name=\"time\" w=\"3in\" h=\"0.3in\" access=\"nonInteractive\"><ui><dateTimeEdit/></ui>"
++                      "<format><picture>time{h:MM A}</picture></format><value><time>13:05:00</time></value></field>"
++                      "</subform></template>"
++                      "<localeSet xmlns=\"http://www.xfa.org/schema/xfa-locale-set/2.7/\"><locale name=\"en_CA\">"
++                      "<datePatterns><datePattern name=\"short\">YYYY/MM/DD</datePattern></datePatterns>"
++                      "</locale></localeSet></xdp:xdp>";
++    GBytes *bytes = build_pdf_from(xml);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    char *text = page_text(rendered);
++    g_assert_nonnull(strstr(text, "$1,234.5"));
++    g_assert_null(strstr(text, "1234.5"));
++    g_assert_nonnull(strstr(text, "nil"));
++    g_assert_nonnull(strstr(text, "2024/03/05"));
++    g_assert_nonnull(strstr(text, "5 mars 2024"));
++    g_assert_nonnull(strstr(text, "1:05 PM"));
++    g_free(text);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ /* A script builds a data tree far deeper than the parser's limit and then
+  * serializes it. The recursive walkers cap their own depth, so the save is
+  * truncated rather than overflowing the stack: a 2000-deep chain serializes
+@@ -1234,5 +1276,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/invalid-state-type", test_invalid_state_type);
+     g_test_add_func("/xfa/default-ui", test_default_ui);
+     g_test_add_func("/xfa/deep-script-tree", test_deep_script_tree);
++    g_test_add_func("/xfa/locales", test_locales);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 9bc1cfb..2c21e46 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -396,6 +396,7 @@ std::string XFAForm::scriptSource(const XFANode *s, bool *runnable)
+ 
+ static void mergeData(XFAForm *form, XFANode *node, const XFANode *data, bool skipEmpty, int depth = 0);
+ static void markData(XFANode *node, int depth = 0);
++static std::vector<XFALocale> readLocales(const XFANode *localeSet);
+ 
+ XFAForm::XFAForm() = default;
+ 
+@@ -493,6 +494,12 @@ bool XFAForm::build(PDFDoc *doc, std::string *error)
+     }
+     markData(datasets.get());
+ 
++    for (const auto &packet : xdpRoot->getChildren()) {
++        if (!packet->isText() && packet->getClassName() == "localeSet") {
++            locales = readLocales(packet.get());
++        }
++    }
++
+     // The host language decides which language bilingual forms start in.
+     const char *envs[] = { "LC_ALL", "LC_MESSAGES", "LANG" };
+     language = "en_US";
+@@ -1187,6 +1194,102 @@ static std::string pictureOf(const XFANode *node, const char *where)
+     return picture ? picture->textContent() : std::string();
+ }
+ 
++// The text of an element of a localeSet, without the line breaks and
++// indentation around it.
++static std::string localeText(const XFANode *node)
++{
++    std::string s = node->textContent();
++    const size_t start = s.find_first_not_of("\r\n\t");
++    const size_t end = s.find_last_not_of("\r\n\t");
++    return start == std::string::npos ? std::string() : s.substr(start, end - start + 1);
++}
++
++static std::vector<XFALocale> readLocales(const XFANode *localeSet)
++{
++    std::vector<XFALocale> res;
++    for (const XFANode *node : localeSet->childrenOfClass("locale")) {
++        // What the form leaves out keeps its built-in definition.
++        XFALocale l = XFABuiltinLocale(node->getAttr("name", ""));
++        const auto texts = [](const XFANode *list, const char *item) {
++            std::vector<std::string> v;
++            for (const XFANode *n : list->childrenOfClass(item)) {
++                v.push_back(localeText(n));
++            }
++            return v;
++        };
++        const auto named = [](const XFANode *list, const char *item, std::map<std::string, std::string> &into) {
++            for (const XFANode *n : list->childrenOfClass(item)) {
++                into[n->getAttr("name", "")] = localeText(n);
++            }
++        };
++        if (const XFANode *calendar = node->firstChild("calendarSymbols")) {
++            for (const XFANode *names : calendar->childrenOfClass("monthNames")) {
++                if (std::vector<std::string> v = texts(names, "month"); v.size() == 12) {
++                    (names->getAttr("abbr", "0") == "1" ? l.monthAbbrs : l.months) = std::move(v);
++                }
++            }
++            for (const XFANode *names : calendar->childrenOfClass("dayNames")) {
++                if (std::vector<std::string> v = texts(names, "day"); v.size() == 7) {
++                    (names->getAttr("abbr", "0") == "1" ? l.dayAbbrs : l.days) = std::move(v);
++                }
++            }
++            if (const XFANode *names = calendar->firstChild("meridiemNames")) {
++                if (std::vector<std::string> v = texts(names, "meridiem"); v.size() == 2) {
++                    l.meridiems = std::move(v);
++                }
++            }
++            if (const XFANode *names = calendar->firstChild("eraNames")) {
++                if (std::vector<std::string> v = texts(names, "era"); v.size() == 2) {
++                    l.eras = std::move(v);
++                }
++            }
++        }
++        if (const XFANode *list = node->firstChild("datePatterns")) {
++            named(list, "datePattern", l.datePatterns);
++        }
++        if (const XFANode *list = node->firstChild("timePatterns")) {
++            named(list, "timePattern", l.timePatterns);
++        }
++        if (const XFANode *list = node->firstChild("numberPatterns")) {
++            named(list, "numberPattern", l.numberPatterns);
++        }
++        if (const XFANode *symbols = node->firstChild("dateTimeSymbols"); symbols && !localeText(symbols).empty()) {
++            l.dateTimeSymbols = localeText(symbols);
++        }
++        // Number symbols are kept as they are: grouping may be a space.
++        if (const XFANode *list = node->firstChild("numberSymbols")) {
++            for (const XFANode *n : list->childrenOfClass("numberSymbol")) {
++                const std::string name = n->getAttr("name", "");
++                const std::string v = n->textContent();
++                if (v.empty()) {
++                    continue;
++                }
++                if (name == "decimal") {
++                    l.decimal = v;
++                } else if (name == "grouping") {
++                    l.grouping = v;
++                } else if (name == "percent") {
++                    l.percent = v;
++                } else if (name == "minus") {
++                    l.minus = v;
++                }
++            }
++        }
++        if (const XFANode *list = node->firstChild("currencySymbols")) {
++            for (const XFANode *n : list->childrenOfClass("currencySymbol")) {
++                const std::string name = n->getAttr("name", "");
++                if (name == "symbol" && !localeText(n).empty()) {
++                    l.currencySymbol = localeText(n);
++                } else if (name == "isoname" && !localeText(n).empty()) {
++                    l.currencyName = localeText(n);
++                }
++            }
++        }
++        res.push_back(std::move(l));
++    }
++    return res;
++}
++
+ std::string XFAForm::localeOf(const XFANode *node) const
+ {
+     for (const XFANode *n = node; n; n = n->getParent()) {
+@@ -1204,7 +1307,7 @@ std::string XFAForm::getEditValue(XFANode *node) const
+     if (!raw || picture.empty()) {
+         return raw.value_or("");
+     }
+-    return XFAPictureFormat(picture, *raw, localeOf(node)).value_or(*raw);
++    return XFAPictureFormat(picture, *raw, localeOf(node), locales).value_or(*raw);
+ }
+ 
+ std::optional<std::string> XFAForm::getWidgetValue(XFANode *node) const
+@@ -1237,7 +1340,7 @@ void XFAForm::setFormattedValue(XFANode *node, const std::string &text)
+     for (const char *where : { "ui", "format" }) {
+         const std::string picture = pictureOf(node, where);
+         if (!picture.empty()) {
+-            if (const std::optional<std::string> v = XFAPictureParse(picture, text, locale)) {
++            if (const std::optional<std::string> v = XFAPictureParse(picture, text, locale, locales)) {
+                 setRawValue(node, v);
+                 return;
+             }
+@@ -1266,7 +1369,7 @@ std::string XFAForm::getFormattedValue(XFANode *node) const
+     if (picture.empty()) {
+         return *raw;
+     }
+-    return XFAPictureFormat(picture, *raw, localeOf(node)).value_or(*raw);
++    return XFAPictureFormat(picture, *raw, localeOf(node), locales).value_or(*raw);
+ }
+ 
+ std::string XFAForm::getPresence(const XFANode *node) const
+@@ -1416,7 +1519,7 @@ bool XFAForm::runValidations(XFANode *node, bool nullTests, bool report)
+         const std::string picture = pictureOf(n, "validate");
+         if (nullTests && !raw && validate->getAttr("nullTest", "disabled") != "disabled") {
+             failed = "nullTest";
+-        } else if (raw && !picture.empty() && !XFAPictureFormat(picture, *raw, localeOf(n))) {
++        } else if (raw && !picture.empty() && !XFAPictureFormat(picture, *raw, localeOf(n), locales)) {
+             failed = "formatTest";
+         } else if (const XFANode *s = scriptOf(validate)) {
+             bool runnable;
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index 3e83929..a8b39c6 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -16,6 +16,7 @@
+ #define XFAFORM_H
+ 
+ #include "XFANode.h"
++#include "XFAPicture.h"
+ #include "poppler_private_export.h"
+ 
+ #include <functional>
+@@ -157,6 +158,8 @@ public:
+     void setFormattedValue(XFANode *node, const std::string &text);
+     // The locale of node, such as "en_CA", inherited from its ancestors.
+     std::string localeOf(const XFANode *node) const;
++    // The locales the form defines in its localeSet.
++    const std::vector<XFALocale> &getLocales() const { return locales; }
+     // Items of a choice list or check button: display texts and values.
+     std::vector<std::string> getItems(XFANode *field, bool saveValues) const;
+     // Changes to the items by scripts. save is the value of an item when it
+@@ -269,6 +272,7 @@ private:
+     std::vector<XFAHostRequest> requests;
+     std::vector<std::string> log;
+     std::string language;
++    std::vector<XFALocale> locales;
+     std::string originalXDP;
+     VisibleState shownState; // of the PDF the viewer shows
+     unsigned int changeCount = 0;
+diff --git a/poppler/XFAPicture.cc b/poppler/XFAPicture.cc
+index 2d4f27a..094ecbc 100644
+--- a/poppler/XFAPicture.cc
++++ b/poppler/XFAPicture.cc
+@@ -2,8 +2,9 @@
+ //
+ // XFAPicture.cc
+ //
+-// Numeric, date and text picture clauses. Numbers are formatted from
+-// their decimal digits, without going through floating point.
++// Numeric, date, time and text picture clauses. Numbers are formatted from
++// their decimal digits, without going through floating point. Names and
++// default patterns come from the form's locales.
+ //
+ // This file is licensed under the GPLv2 or later
+ //
+@@ -15,35 +16,156 @@
+ 
+ #include "XFAPicture.h"
+ 
++#include "goo/glibc.h"
++
+ #include <algorithm>
+ #include <cctype>
+-#include <vector>
+-
+-namespace {
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
+ 
+-struct Locale
+-{
+-    bool french = false;
+-    std::string radix = ".";
+-    std::string grouping = ",";
+-    std::string currency = "$";
+-};
++//------------------------------------------------------------------------
++// Locales
++//------------------------------------------------------------------------
+ 
+-Locale localeOf(const std::string &name)
++XFALocale XFABuiltinLocale(const std::string &name)
+ {
+-    Locale l;
+-    if (name.starts_with("fr")) {
+-        l.french = true;
+-        l.radix = ",";
++    XFALocale l;
++    l.name = name.empty() ? std::string("en_US") : name;
++    l.meridiems = { "AM", "PM" };
++    l.percent = "%";
++    l.minus = "-";
++    if (l.name.starts_with("fr")) {
++        const bool canada = l.name == "fr_CA";
++        l.months = { "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre" };
++        l.monthAbbrs = { "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc." };
++        l.days = { "dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi" };
++        l.dayAbbrs = { "dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam." };
++        l.eras = { "av. J.-C.", "ap. J.-C." };
++        l.datePatterns = { { "full", "EEEE D MMMM YYYY" }, { "long", "D MMMM YYYY" }, { "med", canada ? "YY-MM-DD" : "D MMM YY" }, { "short", canada ? "YY-MM-DD" : "DD/MM/YY" } };
++        l.timePatterns = { { "full", canada ? "HH' h 'MM' min 'SS' s 'Z" : "HH' h 'MM Z" }, { "long", "HH:MM:SS Z" }, { "med", "HH:MM:SS" }, { "short", "HH:MM" } };
++        l.dateTimeSymbols = "GaMjkHmsSEDFwWxhKzZ";
++        l.decimal = ",";
+         l.grouping = " ";
++        l.currencySymbol = canada ? "$" : "€";
++        l.currencyName = canada ? "CAD" : "EUR";
++        l.numberPatterns = { { "numeric", "z,zz9.zzz" }, { "currency", "z,zz9.99 " + l.currencySymbol + "|(z,zz9.99" + l.currencySymbol + ")" }, { "percent", "z,zz9%" } };
++        return l;
+     }
++    const bool canada = l.name == "en_CA";
++    l.months = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
++    l.monthAbbrs = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
++    l.days = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
++    l.dayAbbrs = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
++    l.eras = { "BC", "AD" };
++    l.datePatterns = { { "full", "EEEE, MMMM D, YYYY" }, { "long", "MMMM D, YYYY" }, { "med", canada ? "D-MMM-YY" : "MMM D, YYYY" }, { "short", canada ? "DD/MM/YY" : "M/D/YY" } };
++    l.timePatterns = { { "full", "h:MM:SS A Z" }, { "long", "h:MM:SS A Z" }, { "med", "h:MM:SS A" }, { "short", "h:MM A" } };
++    l.dateTimeSymbols = "GyMdkHmsSEDFwWahKzZ";
++    l.decimal = ".";
++    l.grouping = ",";
++    l.currencySymbol = "$";
++    l.currencyName = canada ? "CAD" : "USD";
++    l.numberPatterns = { { "numeric", "z,zz9.zzz" }, { "currency", canada ? "$z,zz9.99" : "$z,zz9.99|($z,zz9.99)" }, { "percent", "z,zz9%" } };
+     return l;
+ }
+ 
+-const char *const monthsEn[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+-const char *const monthsFr[] = { "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre" };
+-const char *const daysEn[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+-const char *const daysFr[] = { "dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi" };
++std::optional<XFALocale> XFAFindLocale(const std::vector<XFALocale> &locales, const std::string &name)
++{
++    std::string n = name;
++    std::ranges::replace(n, '-', '_');
++    for (const XFALocale &l : locales) {
++        if (l.name == n) {
++            return l;
++        }
++    }
++    if (n.empty() || n.starts_with("en") || n.starts_with("fr")) {
++        return XFABuiltinLocale(n);
++    }
++    return std::nullopt;
++}
++
++std::string XFALocalizePattern(const XFALocale &locale, const std::string &pattern, bool time)
++{
++    // The standard letter, in "GyMdkHmsSEDFwWahKzZ", for each picture symbol.
++    static const std::string standard = "GyMdkHmsSEDFwWahKzZ";
++    std::string out;
++    for (size_t i = 0; i < pattern.size(); ++i) {
++        const char c = pattern[i];
++        if (c == '\'') {
++            const size_t end = pattern.find('\'', i + 1);
++            out += pattern.substr(i, end == std::string::npos ? std::string::npos : end - i + 1);
++            i = end == std::string::npos ? pattern.size() : end;
++            continue;
++        }
++        char letter = 0;
++        if (time) {
++            switch (c) {
++            case 'H':
++                letter = 'H';
++                break;
++            case 'K':
++                letter = 'k';
++                break;
++            case 'h':
++                letter = 'h';
++                break;
++            case 'k':
++                letter = 'K';
++                break;
++            case 'M':
++                letter = 'm';
++                break;
++            case 'S':
++                letter = 's';
++                break;
++            case 'F':
++                letter = 'S';
++                break;
++            case 'A':
++                letter = 'a';
++                break;
++            case 'Z':
++                letter = 'z';
++                break;
++            case 'z':
++                letter = 'Z';
++                break;
++            }
++        } else {
++            switch (c) {
++            case 'G':
++                letter = 'G';
++                break;
++            case 'Y':
++                letter = 'y';
++                break;
++            case 'M':
++                letter = 'M';
++                break;
++            case 'D':
++                letter = 'd';
++                break;
++            case 'E':
++                letter = 'E';
++                break;
++            case 'J':
++                letter = 'D';
++                break;
++            case 'w':
++                letter = 'w';
++                break;
++            case 'W':
++                letter = 'W';
++                break;
++            }
++        }
++        const size_t at = letter ? standard.find(letter) : std::string::npos;
++        out += at != std::string::npos && at < locale.dateTimeSymbols.size() ? locale.dateTimeSymbols[at] : c;
++    }
++    return out;
++}
++
++namespace {
+ 
+ // One clause of a picture: category{pattern}, with an optional
+ // subcategory (num.decimal) and locale (date(fr_CA)).
+@@ -55,7 +177,8 @@ struct Clause
+     std::string pattern;
+ };
+ 
+-std::vector<std::string> alternatives(const std::string &picture)
++// Splits at unquoted separators outside braces.
++std::vector<std::string> splitPicture(const std::string &picture, char separator, bool braces)
+ {
+     std::vector<std::string> res;
+     std::string cur;
+@@ -64,12 +187,12 @@ std::vector<std::string> alternatives(const std::string &picture)
+     for (char c : picture) {
+         if (c == '\'') {
+             quoted = !quoted;
+-        } else if (!quoted && c == '{') {
++        } else if (braces && !quoted && c == '{') {
+             ++depth;
+-        } else if (!quoted && c == '}') {
++        } else if (braces && !quoted && c == '}') {
+             --depth;
+         }
+-        if (c == '|' && !quoted && depth == 0) {
++        if (c == separator && !quoted && depth == 0) {
+             res.push_back(cur);
+             cur.clear();
+         } else {
+@@ -80,15 +203,49 @@ std::vector<std::string> alternatives(const std::string &picture)
+     return res;
+ }
+ 
++std::vector<std::string> alternatives(const std::string &picture)
++{
++    return splitPicture(picture, '|', true);
++}
++
++// Whether the unquoted part of pattern has one of chars.
++bool hasSymbol(const std::string &pattern, const char *chars)
++{
++    bool quoted = false;
++    for (char c : pattern) {
++        if (c == '\'') {
++            quoted = !quoted;
++        } else if (!quoted && std::strchr(chars, c)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++// The category of a pattern given without one, from its symbols.
++std::string bareCategory(const std::string &pattern)
++{
++    if (pattern.find_first_not_of("9zZ8,.vVsS$% ()") == std::string::npos) {
++        return "num";
++    }
++    // A is also a text placeholder: times need an hour.
++    if (hasSymbol(pattern, "YDEJ")) {
++        return hasSymbol(pattern, "hHkK") ? "datetime" : "date";
++    }
++    if (hasSymbol(pattern, "hHkK")) {
++        return "time";
++    }
++    return "text";
++}
++
+ std::optional<Clause> parseClause(const std::string &text, const std::string &defaultLocale)
+ {
+     Clause c;
+     c.locale = defaultLocale;
+     const size_t open = text.find('{');
+     if (open == std::string::npos) {
+-        // A bare pattern: numeric if it only has numeric symbols.
+         c.pattern = text;
+-        c.category = text.find_first_not_of("9zZ8,.sS$% ()") == std::string::npos ? "num" : "text";
++        c.category = bareCategory(text);
+         return c;
+     }
+     const size_t close = text.rfind('}');
+@@ -113,36 +270,90 @@ std::optional<Clause> parseClause(const std::string &text, const std::string &de
+     return c;
+ }
+ 
++// A locale number pattern shows one group of digits, as in "$z,zz9.99":
++// the groups repeat as far as values need.
++std::string widenNumberPattern(const std::string &pattern)
++{
++    std::string out;
++    for (const std::string &alt : alternatives(pattern)) {
++        std::string p = alt;
++        const size_t start = p.find_first_of("9zZ8");
++        if (start != std::string::npos) {
++            size_t end = start;
++            while (end < p.size() && std::strchr("9zZ8,", p[end])) {
++                ++end;
++            }
++            const std::string run = p.substr(start, end - start);
++            if (const size_t comma = run.rfind(','); comma != std::string::npos) {
++                const char fill = run[0] == 'Z' ? 'Z' : 'z';
++                std::string widened;
++                for (int i = 0; i < 4; ++i) {
++                    widened += std::string(3, fill) + ",";
++                }
++                p.replace(start, end - start, widened + run.substr(comma + 1));
++            }
++        }
++        out += (out.empty() ? "" : "|") + p;
++    }
++    return out;
++}
++
++std::string patternByStyle(const std::map<std::string, std::string> &patterns, const std::string &subcategory)
++{
++    const std::string style = subcategory == "short" || subcategory == "long" || subcategory == "full" ? subcategory : "med";
++    const auto it = patterns.find(style);
++    return it == patterns.end() ? std::string() : it->second;
++}
++
+ // The locale's pattern for clauses such as num.decimal{} or date.short{}.
+-std::string defaultPattern(const Clause &c, const Locale &l)
++std::string defaultPattern(const Clause &c, const XFALocale &l)
+ {
+     if (c.category == "num") {
+-        if (c.subcategory == "integer") {
+-            return "z,zzz,zzz,zzz,zz9";
+-        }
++        const auto get = [&l](const char *kind) {
++            const auto it = l.numberPatterns.find(kind);
++            return it == l.numberPatterns.end() ? std::string() : it->second;
++        };
+         if (c.subcategory == "currency") {
+-            return l.french ? "z,zzz,zzz,zz9.99' $'" : "$z,zzz,zzz,zz9.99";
++            return widenNumberPattern(get("currency"));
+         }
+         if (c.subcategory == "percent") {
+-            return "z,zzz,zz9%";
++            return widenNumberPattern(get("percent"));
++        }
++        std::string numeric = get("numeric");
++        if (c.subcategory == "integer") {
++            numeric = numeric.substr(0, numeric.find_first_of(".vV"));
+         }
+-        return "z,zzz,zzz,zzz,zz9.zzz";
++        return widenNumberPattern(numeric);
+     }
+     if (c.category == "date") {
+-        if (c.subcategory == "short") {
+-            return l.french ? "YY-MM-DD" : "M/D/YY";
+-        }
+-        if (c.subcategory == "long") {
+-            return l.french ? "D MMMM YYYY" : "MMMM D, YYYY";
+-        }
+-        if (c.subcategory == "full") {
+-            return l.french ? "EEEE D MMMM YYYY" : "EEEE, MMMM D, YYYY";
+-        }
+-        return l.french ? "D MMM YYYY" : "MMM D, YYYY";
++        return patternByStyle(l.datePatterns, c.subcategory);
++    }
++    if (c.category == "time") {
++        return patternByStyle(l.timePatterns, c.subcategory);
++    }
++    if (c.category == "datetime") {
++        const std::string date = patternByStyle(l.datePatterns, c.subcategory);
++        const std::string time = patternByStyle(l.timePatterns, c.subcategory);
++        return date.empty() || time.empty() ? std::string() : date + "T" + time;
+     }
+     return {};
+ }
+ 
++// The text of a pattern made only of literals, without its quotes.
++std::string literalText(const std::string &pattern)
++{
++    std::string out;
++    for (size_t i = 0; i < pattern.size(); ++i) {
++        if (pattern[i] != '\'') {
++            out += pattern[i];
++        } else if (i + 1 < pattern.size() && pattern[i + 1] == '\'') {
++            out += '\'';
++            ++i;
++        }
++    }
++    return out;
++}
++
+ //------------------------------------------------------------------------
+ // Numbers
+ //------------------------------------------------------------------------
+@@ -284,7 +495,7 @@ void roundDecimal(Decimal &d, size_t places)
+     }
+ }
+ 
+-std::optional<std::string> formatNumber(const std::string &pattern, const std::string &value, const Locale &l)
++std::optional<std::string> formatNumber(const std::string &pattern, const std::string &value, const XFALocale &l)
+ {
+     const auto tokens = numTokens(pattern);
+     auto d = parseDecimal(value);
+@@ -337,7 +548,7 @@ std::optional<std::string> formatNumber(const std::string &pattern, const std::s
+                 // Shown when a fraction digit follows.
+                 const bool shows = !d->fraction.empty() || std::any_of(radix, tokens->end(), [](const NumToken &k) { return k.kind == NumToken::Digit && k.text == "9"; });
+                 if (shows) {
+-                    out += l.radix;
++                    out += l.decimal;
+                 }
+             }
+             break;
+@@ -360,7 +571,7 @@ std::optional<std::string> formatNumber(const std::string &pattern, const std::s
+             }
+             break;
+         case NumToken::Currency:
+-            out += l.currency;
++            out += l.currencySymbol;
+             break;
+         case NumToken::Percent:
+             out += '%';
+@@ -373,7 +584,7 @@ std::optional<std::string> formatNumber(const std::string &pattern, const std::s
+     return out;
+ }
+ 
+-std::optional<std::string> parseNumber(const std::string &pattern, const std::string &text, const Locale &l)
++std::optional<std::string> parseNumber(const std::string &pattern, const std::string &text, const XFALocale &l)
+ {
+     const auto tokens = numTokens(pattern);
+     if (!tokens) {
+@@ -398,19 +609,19 @@ std::optional<std::string> parseNumber(const std::string &pattern, const std::st
+         const char c = s[i];
+         if (std::isdigit(static_cast<unsigned char>(c))) {
+             digits += c;
+-        } else if (s.compare(i, l.radix.size(), l.radix) == 0 || (c == '.' && l.radix != ".")) {
++        } else if (s.compare(i, l.decimal.size(), l.decimal) == 0 || (c == '.' && l.decimal != ".")) {
+             if (seenRadix) {
+                 return std::nullopt;
+             }
+             seenRadix = true;
+             digits += '.';
+-            i += l.radix.size() - 1;
++            i += l.decimal.size() - 1;
+         } else if (c == '-' || c == '(' || c == ')') {
+             negative = true;
+         } else if ((c == 'C' || c == 'c' || c == 'D' || c == 'd') && i + 1 < s.size() && std::isalpha(static_cast<unsigned char>(s[i + 1]))) {
+             negative = true;
+             ++i;
+-        } else if (c == ' ' || c == '+' || c == '$' || c == '%' || s.compare(i, l.grouping.size(), l.grouping) == 0 || (c == ',' && l.radix != ",")) {
++        } else if (c == ' ' || c == '+' || c == '$' || c == '%' || s.compare(i, l.grouping.size(), l.grouping) == 0 || (c == ',' && l.decimal != ",")) {
+             continue;
+         } else if (static_cast<unsigned char>(c) >= 0x80) {
+             continue; // no-break spaces and other separators
+@@ -586,8 +797,9 @@ int dayOfYear(const Date &d)
+     return n;
+ }
+ 
+-// Runs of the same date symbol, quoted literals and other characters.
+-std::vector<std::string> dateTokens(const std::string &p)
++// Runs of the same symbol among symbols, quoted literals (with a leading
++// quote) and other characters.
++std::vector<std::string> symbolTokens(const std::string &p, const char *symbols)
+ {
+     std::vector<std::string> res;
+     for (size_t i = 0; i < p.size();) {
+@@ -596,7 +808,7 @@ std::vector<std::string> dateTokens(const std::string &p)
+             const size_t end = p.find('\'', i + 1);
+             res.push_back("'" + p.substr(i + 1, end == std::string::npos ? std::string::npos : end - i - 1));
+             i = end == std::string::npos ? p.size() : end + 1;
+-        } else if (c == 'Y' || c == 'M' || c == 'D' || c == 'E' || c == 'J') {
++        } else if (std::strchr(symbols, c)) {
+             size_t k = i;
+             while (k < p.size() && p[k] == c) {
+                 ++k;
+@@ -611,30 +823,39 @@ std::vector<std::string> dateTokens(const std::string &p)
+     return res;
+ }
+ 
++const char *const dateSymbols = "YMDEJG";
++const char *const timeSymbols = "hkHKMSFAZz";
++
+ std::string padded(int v, size_t width)
+ {
+     std::string s = std::to_string(v);
+     return std::string(width > s.size() ? width - s.size() : 0, '0') + s;
+ }
+ 
+-std::optional<std::string> formatDate(const std::string &pattern, const std::string &value, const Locale &l)
++std::string nameAt(const std::vector<std::string> &names, size_t i)
++{
++    return i < names.size() ? names[i] : std::string();
++}
++
++std::optional<Date> canonicalDate(const std::string &value)
+ {
+-    // The canonical form, YYYY-MM-DD, or YYYYMMDD.
+-    Date d;
+-    const std::string digits = value.size() == 10 && value[4] == '-' && value[7] == '-' ? value.substr(0, 4) + value.substr(5, 2) + value.substr(8, 2) : value;
++    // YYYY-MM-DD or YYYYMMDD, possibly followed by a time.
++    const std::string date = value.substr(0, value.find('T'));
++    const std::string digits = date.size() == 10 && date[4] == '-' && date[7] == '-' ? date.substr(0, 4) + date.substr(5, 2) + date.substr(8, 2) : date;
+     if (digits.size() != 8 || !std::ranges::all_of(digits, [](char c) { return std::isdigit(static_cast<unsigned char>(c)); })) {
+         return std::nullopt;
+     }
+-    d.y = std::stoi(digits.substr(0, 4));
+-    d.m = std::stoi(digits.substr(4, 2));
+-    d.d = std::stoi(digits.substr(6, 2));
++    const Date d { std::atoi(digits.substr(0, 4).c_str()), std::atoi(digits.substr(4, 2).c_str()), std::atoi(digits.substr(6, 2).c_str()) };
+     if (!validDate(d)) {
+         return std::nullopt;
+     }
+-    const char *const *months = l.french ? monthsFr : monthsEn;
+-    const char *const *days = l.french ? daysFr : daysEn;
++    return d;
++}
++
++std::optional<std::string> formatDateOf(const std::string &pattern, const Date &d, const XFALocale &l)
++{
+     std::string out;
+-    for (const std::string &t : dateTokens(pattern)) {
++    for (const std::string &t : symbolTokens(pattern, dateSymbols)) {
+         if (t[0] == '\'') {
+             out += t.substr(1);
+         } else if (t == "YYYY") {
+@@ -642,12 +863,9 @@ std::optional<std::string> formatDate(const std::string &pattern, const std::str
+         } else if (t == "YY") {
+             out += padded(d.y % 100, 2);
+         } else if (t == "MMMM") {
+-            out += months[d.m - 1];
++            out += nameAt(l.months, d.m - 1);
+         } else if (t == "MMM") {
+-            const std::vector<std::string> name = characters(months[d.m - 1]);
+-            for (size_t i = 0; i < std::min<size_t>(3, name.size()); ++i) {
+-                out += name[i];
+-            }
++            out += nameAt(l.monthAbbrs, d.m - 1);
+         } else if (t == "MM") {
+             out += padded(d.m, 2);
+         } else if (t == "M") {
+@@ -657,13 +875,17 @@ std::optional<std::string> formatDate(const std::string &pattern, const std::str
+         } else if (t == "D") {
+             out += std::to_string(d.d);
+         } else if (t == "EEEE") {
+-            out += days[weekday(d)];
++            out += nameAt(l.days, weekday(d));
+         } else if (t == "EEE") {
+-            out += std::string(days[weekday(d)]).substr(0, 3);
++            out += nameAt(l.dayAbbrs, weekday(d));
++        } else if (t == "E") {
++            out += std::to_string(weekday(d) + 1);
+         } else if (t == "JJJ") {
+             out += padded(dayOfYear(d), 3);
+         } else if (t == "J") {
+             out += std::to_string(dayOfYear(d));
++        } else if (t == "G") {
++            out += nameAt(l.eras, 1);
+         } else {
+             return std::nullopt;
+         }
+@@ -671,11 +893,14 @@ std::optional<std::string> formatDate(const std::string &pattern, const std::str
+     return out;
+ }
+ 
+-std::optional<std::string> parseDate(const std::string &pattern, const std::string &text, const Locale &l)
++// Reads text from pos on.
++class Reader
+ {
+-    Date d { 0, 0, 0 };
+-    size_t pos = 0;
+-    auto number = [&](size_t min, size_t max) -> std::optional<int> {
++public:
++    Reader(const std::string &textA, size_t posA = 0) : text(textA), pos(posA) { }
++
++    std::optional<int> number(size_t min, size_t max)
++    {
+         size_t k = pos;
+         while (k < text.size() && k - pos < max && std::isdigit(static_cast<unsigned char>(text[k]))) {
+             ++k;
+@@ -683,52 +908,82 @@ std::optional<std::string> parseDate(const std::string &pattern, const std::stri
+         if (k - pos < min) {
+             return std::nullopt;
+         }
+-        const int v = std::stoi(text.substr(pos, k - pos));
++        const int v = std::atoi(text.substr(pos, k - pos).c_str());
+         pos = k;
+         return v;
+-    };
+-    auto name = [&](const char *const *names, int count, size_t len) -> std::optional<int> {
+-        for (int i = 0; i < count; ++i) {
+-            std::string n;
+-            const std::vector<std::string> chars = characters(names[i]);
+-            for (size_t k = 0; k < chars.size() && (!len || k < len); ++k) {
+-                n += chars[k];
+-            }
+-            if (text.size() - pos >= n.size() && std::equal(n.begin(), n.end(), text.begin() + pos, [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); })) {
+-                pos += n.size();
+-                return i;
++    }
++
++    // The index of the longest of names that text continues with.
++    std::optional<int> name(const std::vector<std::string> &names)
++    {
++        int best = -1;
++        size_t bestSize = 0;
++        for (size_t i = 0; i < names.size(); ++i) {
++            const std::string &n = names[i];
++            if (!n.empty() && n.size() > bestSize && text.size() - pos >= n.size()
++                && std::equal(n.begin(), n.end(), text.begin() + pos, [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); })) {
++                best = static_cast<int>(i);
++                bestSize = n.size();
+             }
+         }
+-        return std::nullopt;
+-    };
+-    const char *const *months = l.french ? monthsFr : monthsEn;
+-    const char *const *days = l.french ? daysFr : daysEn;
+-    for (const std::string &t : dateTokens(pattern)) {
++        if (best < 0) {
++            return std::nullopt;
++        }
++        pos += bestSize;
++        return best;
++    }
++
++    bool literal(const std::string &s)
++    {
++        if (text.compare(pos, s.size(), s) != 0) {
++            return false;
++        }
++        pos += s.size();
++        return true;
++    }
++
++    const std::string &text;
++    size_t pos;
++};
++
++std::optional<Date> readDate(const std::string &pattern, Reader &r, const XFALocale &l)
++{
++    Date d { 0, 0, 0 };
++    for (const std::string &t : symbolTokens(pattern, dateSymbols)) {
+         std::optional<int> v;
+         if (t[0] == '\'') {
+-            if (text.compare(pos, t.size() - 1, t, 1) != 0) {
++            if (!r.literal(t.substr(1))) {
+                 return std::nullopt;
+             }
+-            pos += t.size() - 1;
+             continue;
+         }
+         if (t == "YYYY") {
+-            v = number(4, 4);
++            v = r.number(4, 4);
+             d.y = v.value_or(0);
+         } else if (t == "YY") {
+-            v = number(2, 2);
++            v = r.number(2, 2);
+             d.y = v ? (*v < 50 ? 2000 : 1900) + *v : 0;
+         } else if (t == "MMMM" || t == "MMM") {
+-            v = name(months, 12, t == "MMM" ? 3 : 0);
+-            d.m = v ? *v + 1 : 0;
++            // Full names and abbreviations are both understood.
++            std::vector<std::string> names = t == "MMMM" ? l.months : l.monthAbbrs;
++            const std::vector<std::string> &other = t == "MMMM" ? l.monthAbbrs : l.months;
++            names.insert(names.end(), other.begin(), other.end());
++            v = r.name(names);
++            d.m = v ? *v % 12 + 1 : 0;
+         } else if (t == "MM" || t == "M") {
+-            v = number(t.size(), 2);
++            v = r.number(t.size(), 2);
+             d.m = v.value_or(0);
+         } else if (t == "DD" || t == "D") {
+-            v = number(t.size(), 2);
++            v = r.number(t.size(), 2);
+             d.d = v.value_or(0);
+         } else if (t == "EEEE" || t == "EEE") {
+-            v = name(days, 7, t == "EEE" ? 3 : 0);
++            std::vector<std::string> names = l.days;
++            names.insert(names.end(), l.dayAbbrs.begin(), l.dayAbbrs.end());
++            v = r.name(names);
++        } else if (t == "E") {
++            v = r.number(1, 1);
++        } else if (t == "G") {
++            v = r.name(l.eras);
+         } else {
+             return std::nullopt;
+         }
+@@ -736,33 +991,396 @@ std::optional<std::string> parseDate(const std::string &pattern, const std::stri
+             return std::nullopt;
+         }
+     }
+-    if (pos != text.size() || !validDate(d)) {
++    if (!validDate(d)) {
+         return std::nullopt;
+     }
++    return d;
++}
++
++std::string canonical(const Date &d)
++{
+     return padded(d.y, 4) + "-" + padded(d.m, 2) + "-" + padded(d.d, 2);
+ }
+ 
+-std::optional<std::string> apply(const std::string &picture, const std::string &input, const std::string &localeName, bool format)
++//------------------------------------------------------------------------
++// Times
++//------------------------------------------------------------------------
++
++struct Time
++{
++    int h = 0, m = 0, s = 0, ms = 0;
++    enum Zone
++    {
++        Local,
++        Utc,
++        Offset
++    } zone = Local;
++    int offset = 0; // minutes east of GMT, for Offset
++};
++
++// The offset of local time from GMT now, in minutes, and its abbreviation.
++std::pair<int, std::string> localZone()
++{
++    const time_t now = time(nullptr);
++    struct tm local;
++    localtime_r(&now, &local);
++    char name[64] = "";
++    strftime(name, sizeof(name), "%Z", &local);
++    const time_t asUtc = timegm(&local);
++    return { static_cast<int>(difftime(asUtc, now)) / 60, name };
++}
++
++std::string offsetText(int minutes, bool colon)
++{
++    const int a = std::abs(minutes);
++    return std::string(minutes < 0 ? "-" : "+") + padded(a / 60, 2) + (colon ? ":" : "") + padded(a % 60, 2);
++}
++
++// A zone written after a time: Z, or an offset such as +01, +0100 or
++// +01:00. Moves pos past it.
++bool readOffset(Reader &r, Time &t)
++{
++    if (r.literal("Z")) {
++        t.zone = Time::Utc;
++        return true;
++    }
++    const size_t start = r.pos;
++    if (r.pos >= r.text.size() || (r.text[r.pos] != '+' && r.text[r.pos] != '-')) {
++        return false;
++    }
++    const int sign = r.text[r.pos] == '-' ? -1 : 1;
++    ++r.pos;
++    const std::optional<int> h = r.number(2, 2);
++    std::optional<int> m = 0;
++    if (h && r.pos < r.text.size() && (r.text[r.pos] == ':' || std::isdigit(static_cast<unsigned char>(r.text[r.pos])))) {
++        r.literal(":");
++        m = r.number(2, 2);
++    }
++    if (!h || !m || *h > 14 || *m > 59) {
++        r.pos = start;
++        return false;
++    }
++    t.zone = Time::Offset;
++    t.offset = sign * (*h * 60 + *m);
++    return true;
++}
++
++// A canonical time: HH[:]MM[[:]SS[.FFF]], or just HH, with an optional
++// zone. A date and "T" may come first.
++std::optional<Time> canonicalTime(const std::string &value)
++{
++    const size_t tpos = value.find('T');
++    Reader r(value, tpos == std::string::npos ? 0 : tpos + 1);
++    Time t;
++    const std::optional<int> h = r.number(2, 2);
++    if (!h) {
++        return std::nullopt;
++    }
++    t.h = *h;
++    const bool colons = r.literal(":");
++    if (const std::optional<int> m = r.number(2, 2)) {
++        t.m = *m;
++        if (!colons || r.literal(":")) {
++            if (const std::optional<int> s = r.number(2, 2)) {
++                t.s = *s;
++                if (r.literal(".")) {
++                    const size_t start = r.pos;
++                    const std::optional<int> f = r.number(1, 3);
++                    if (!f) {
++                        return std::nullopt;
++                    }
++                    t.ms = *f * (r.pos - start == 1 ? 100 : r.pos - start == 2 ? 10 : 1);
++                }
++            }
++        }
++    } else if (colons) {
++        return std::nullopt;
++    }
++    readOffset(r, t);
++    if (r.pos != value.size() || t.h > 24 || t.m > 59 || t.s > 59 || (t.h == 24 && (t.m || t.s || t.ms))) {
++        return std::nullopt;
++    }
++    t.h %= 24;
++    return t;
++}
++
++std::string canonical(const Time &t)
+ {
++    std::string out = padded(t.h, 2) + ":" + padded(t.m, 2) + ":" + padded(t.s, 2);
++    if (t.ms) {
++        out += "." + padded(t.ms, 3);
++    }
++    if (t.zone == Time::Utc) {
++        out += "Z";
++    } else if (t.zone == Time::Offset) {
++        out += offsetText(t.offset, true);
++    }
++    return out;
++}
++
++std::optional<std::string> formatTimeOf(const std::string &pattern, const Time &t, const XFALocale &l)
++{
++    const auto [localOffset, localName] = localZone();
++    const int offset = t.zone == Time::Utc ? 0 : t.zone == Time::Offset ? t.offset : localOffset;
++    std::string out;
++    for (const std::string &k : symbolTokens(pattern, timeSymbols)) {
++        if (k[0] == '\'') {
++            out += k.substr(1);
++        } else if (k == "h" || k == "hh") {
++            out += padded(t.h % 12 ? t.h % 12 : 12, k.size());
++        } else if (k == "k" || k == "kk") {
++            out += padded(t.h % 12, k.size());
++        } else if (k == "H" || k == "HH") {
++            out += padded(t.h, k.size());
++        } else if (k == "K" || k == "KK") {
++            out += padded(t.h ? t.h : 24, k.size());
++        } else if (k == "M" || k == "MM") {
++            out += padded(t.m, k.size());
++        } else if (k == "S" || k == "SS") {
++            out += padded(t.s, k.size());
++        } else if (k == "FFF") {
++            out += padded(t.ms, 3);
++        } else if (k == "A") {
++            out += nameAt(l.meridiems, t.h < 12 ? 0 : 1);
++        } else if (k == "Z") {
++            // Local time has its usual abbreviation in English.
++            if (t.zone == Time::Local && l.name.starts_with("en") && !localName.empty() && localName.find(' ') == std::string::npos) {
++                out += localName;
++            } else {
++                out += offset ? "GMT" + offsetText(offset, true) : "GMT";
++            }
++        } else if (k == "z" || k == "zz") {
++            out += offset || t.zone == Time::Local ? offsetText(offset, k == "zz") : "Z";
++        } else {
++            return std::nullopt;
++        }
++    }
++    return out;
++}
++
++// Zone abbreviations that times may be written with, in minutes east of
++// GMT.
++std::optional<int> zoneOffset(const std::string &name)
++{
++    static const std::pair<const char *, int> zones[] = { { "GMT", 0 },    { "UTC", 0 },    { "UT", 0 },     { "WET", 0 },    { "WEST", 60 },   { "BST", 60 },    { "CET", 60 },   { "CEST", 120 }, { "EET", 120 },
++                                                          { "EEST", 180 }, { "NST", -210 }, { "NDT", -150 }, { "AST", -240 }, { "ADT", -180 },  { "EST", -300 },  { "EDT", -240 }, { "CST", -360 }, { "CDT", -300 },
++                                                          { "MST", -420 }, { "MDT", -360 }, { "PST", -480 }, { "PDT", -420 }, { "AKST", -540 }, { "AKDT", -480 }, { "HST", -600 } };
++    for (const auto &[n, o] : zones) {
++        if (name == n) {
++            return o;
++        }
++    }
++    return std::nullopt;
++}
++
++std::optional<Time> readTime(const std::string &pattern, Reader &r, const XFALocale &l)
++{
++    Time t;
++    int hour = -1;
++    bool twelve = false; // h or k
++    std::optional<int> meridiem;
++    for (const std::string &k : symbolTokens(pattern, timeSymbols)) {
++        std::optional<int> v;
++        if (k[0] == '\'') {
++            if (!r.literal(k.substr(1))) {
++                return std::nullopt;
++            }
++            continue;
++        }
++        const size_t width = k.size() == 2 ? 2 : 1;
++        if (k == "h" || k == "hh" || k == "k" || k == "kk" || k == "H" || k == "HH" || k == "K" || k == "KK") {
++            v = r.number(width, 2);
++            if (v) {
++                const char c = k[0];
++                twelve = c == 'h' || c == 'k';
++                if ((c == 'h' && (*v < 1 || *v > 12)) || (c == 'k' && *v > 11) || (c == 'H' && *v > 23) || (c == 'K' && (*v < 1 || *v > 24))) {
++                    return std::nullopt;
++                }
++                hour = c == 'K' ? *v % 24 : c == 'h' ? *v % 12 : *v;
++            }
++        } else if (k == "M" || k == "MM") {
++            v = r.number(width, 2);
++            if (v && *v > 59) {
++                return std::nullopt;
++            }
++            t.m = v.value_or(0);
++        } else if (k == "S" || k == "SS") {
++            v = r.number(width, 2);
++            if (v && *v > 59) {
++                return std::nullopt;
++            }
++            t.s = v.value_or(0);
++        } else if (k == "FFF") {
++            v = r.number(3, 3);
++            t.ms = v.value_or(0);
++        } else if (k == "A") {
++            v = meridiem = r.name(l.meridiems);
++        } else if (k == "Z") {
++            if (r.literal("GMT") || r.literal("UTC")) {
++                v = 0;
++                if (!readOffset(r, t)) {
++                    t.zone = Time::Utc;
++                }
++            } else {
++                size_t end = r.pos;
++                while (end < r.text.size() && std::isalpha(static_cast<unsigned char>(r.text[end]))) {
++                    ++end;
++                }
++                const std::string name = r.text.substr(r.pos, end - r.pos);
++                if (const std::optional<int> o = zoneOffset(name)) {
++                    v = 0;
++                    r.pos = end;
++                    t.zone = *o ? Time::Offset : Time::Utc;
++                    t.offset = *o;
++                } else if (!name.empty() && name == localZone().second) {
++                    v = 0;
++                    r.pos = end;
++                }
++            }
++        } else if (k == "z" || k == "zz") {
++            if (readOffset(r, t)) {
++                v = 0;
++            }
++        } else {
++            return std::nullopt;
++        }
++        if (!v) {
++            return std::nullopt;
++        }
++    }
++    if (hour < 0) {
++        return std::nullopt;
++    }
++    // A meridiem applies to hours of either clock: "1:13 PM" is 13:13.
++    if (meridiem && *meridiem == 1 && hour < 12) {
++        hour += 12;
++    } else if (meridiem && *meridiem == 0 && twelve) {
++        hour %= 12;
++    }
++    t.h = hour;
++    return t;
++}
++
++//------------------------------------------------------------------------
++// Clauses
++//------------------------------------------------------------------------
++
++// A date-time pattern: the date and time patterns separated by "T".
++std::pair<std::string, std::string> dateTimeParts(const std::string &pattern)
++{
++    const std::vector<std::string> parts = splitPicture(pattern, 'T', false);
++    if (parts.size() < 2) {
++        return { pattern, {} };
++    }
++    std::string time = parts[1];
++    for (size_t i = 2; i < parts.size(); ++i) {
++        time += "T" + parts[i];
++    }
++    return { parts[0], time };
++}
++
++std::optional<std::string> formatClause(const Clause &c, const std::string &pattern, const std::string &value, const XFALocale &l)
++{
++    if (c.category == "num") {
++        return formatNumber(pattern, value, l);
++    }
++    if (c.category == "text") {
++        return formatText(pattern, value);
++    }
++    if (c.category == "date") {
++        const std::optional<Date> d = canonicalDate(value);
++        return d ? formatDateOf(pattern, *d, l) : std::nullopt;
++    }
++    if (c.category == "time") {
++        const std::optional<Time> t = canonicalTime(value);
++        return t ? formatTimeOf(pattern, *t, l) : std::nullopt;
++    }
++    if (c.category == "datetime") {
++        const auto [datePattern, timePattern] = dateTimeParts(pattern);
++        const std::optional<Date> d = canonicalDate(value);
++        const std::optional<Time> t = value.find('T') == std::string::npos ? std::nullopt : canonicalTime(value);
++        if (!d || !t) {
++            return std::nullopt;
++        }
++        const std::optional<std::string> date = formatDateOf(datePattern, *d, l);
++        const std::optional<std::string> time = formatTimeOf(timePattern, *t, l);
++        return date && time ? std::optional<std::string>(*date + *time) : std::nullopt;
++    }
++    if (c.category == "null") {
++        return value.empty() ? std::optional<std::string>(literalText(pattern)) : std::nullopt;
++    }
++    if (c.category == "zero") {
++        const std::optional<Decimal> d = parseDecimal(value);
++        return d && d->whole.empty() && d->fraction.empty() ? std::optional<std::string>(literalText(pattern)) : std::nullopt;
++    }
++    return std::nullopt;
++}
++
++std::optional<std::string> parseClauseText(const Clause &c, const std::string &pattern, const std::string &text, const XFALocale &l)
++{
++    if (c.category == "num") {
++        return parseNumber(pattern, text, l);
++    }
++    if (c.category == "text") {
++        return parseText(pattern, text);
++    }
++    Reader r(text);
++    if (c.category == "date") {
++        const std::optional<Date> d = readDate(pattern, r, l);
++        return d && r.pos == text.size() ? std::optional<std::string>(canonical(*d)) : std::nullopt;
++    }
++    if (c.category == "time") {
++        const std::optional<Time> t = readTime(pattern, r, l);
++        return t && r.pos == text.size() ? std::optional<std::string>(canonical(*t)) : std::nullopt;
++    }
++    if (c.category == "datetime") {
++        const auto [datePattern, timePattern] = dateTimeParts(pattern);
++        const std::optional<Date> d = readDate(datePattern, r, l);
++        const std::optional<Time> t = d ? readTime(timePattern, r, l) : std::nullopt;
++        return t && r.pos == text.size() ? std::optional<std::string>(canonical(*d) + "T" + canonical(*t)) : std::nullopt;
++    }
++    if (c.category == "null") {
++        return text == literalText(pattern) ? std::optional<std::string>(std::string()) : std::nullopt;
++    }
++    if (c.category == "zero") {
++        return text == literalText(pattern) ? std::optional<std::string>("0") : std::nullopt;
++    }
++    return std::nullopt;
++}
++
++std::optional<std::string> apply(const std::string &picture, const std::string &input, const std::string &localeName, const std::vector<XFALocale> &locales, bool format)
++{
++    const XFALocale ambient = XFAFindLocale(locales, localeName).value_or(XFABuiltinLocale({}));
+     for (const std::string &alt : alternatives(picture)) {
+         const std::optional<Clause> c = parseClause(alt, localeName);
+         if (!c) {
+             continue;
+         }
+-        const Locale l = localeOf(c->locale);
+-        const std::string pattern = c->pattern.empty() ? defaultPattern(*c, l) : c->pattern;
+-        if (pattern.empty()) {
+-            return input;
+-        }
+-        std::optional<std::string> res;
+-        if (c->category == "num") {
+-            res = format ? formatNumber(pattern, input, l) : parseNumber(pattern, input, l);
+-        } else if (c->category == "date") {
+-            res = format ? formatDate(pattern, input, l) : parseDate(pattern, input, l);
+-        } else if (c->category == "text") {
+-            res = format ? formatText(pattern, input) : parseText(pattern, input);
++        // A locale that is not known gives way to the ambient one.
++        const XFALocale l = c->locale == localeName ? ambient : XFAFindLocale(locales, c->locale).value_or(ambient);
++        std::string pattern = c->pattern;
++        if (pattern.empty() && c->category != "null" && c->category != "zero") {
++            pattern = defaultPattern(*c, l);
++            if (pattern.empty()) {
++                // text{}: shown as it is.
++                if (c->category == "text") {
++                    return input;
++                }
++                continue;
++            }
++            // Locale patterns may hold alternatives of their own.
++            if (pattern.find('|') != std::string::npos) {
++                std::string inner;
++                for (const std::string &a : alternatives(pattern)) {
++                    inner += (inner.empty() ? "" : "|") + c->category + "(" + l.name + "){" + a + "}";
++                }
++                if (const std::optional<std::string> res = apply(inner, input, localeName, locales, format)) {
++                    return res;
++                }
++                continue;
++            }
+         }
+-        if (res) {
++        if (const std::optional<std::string> res = format ? formatClause(*c, pattern, input, l) : parseClauseText(*c, pattern, input, l)) {
+             return res;
+         }
+     }
+@@ -771,12 +1389,12 @@ std::optional<std::string> apply(const std::string &picture, const std::string &
+ 
+ } // namespace
+ 
+-std::optional<std::string> XFAPictureFormat(const std::string &picture, const std::string &value, const std::string &locale)
++std::optional<std::string> XFAPictureFormat(const std::string &picture, const std::string &value, const std::string &locale, const std::vector<XFALocale> &locales)
+ {
+-    return apply(picture, value, locale, true);
++    return apply(picture, value, locale, locales, true);
+ }
+ 
+-std::optional<std::string> XFAPictureParse(const std::string &picture, const std::string &text, const std::string &locale)
++std::optional<std::string> XFAPictureParse(const std::string &picture, const std::string &text, const std::string &locale, const std::vector<XFALocale> &locales)
+ {
+-    return apply(picture, text, locale, false);
++    return apply(picture, text, locale, locales, false);
+ }
+diff --git a/poppler/XFAPicture.h b/poppler/XFAPicture.h
+index d8f6ba5..79ad6f7 100644
+--- a/poppler/XFAPicture.h
++++ b/poppler/XFAPicture.h
+@@ -15,18 +15,53 @@
+ #ifndef XFAPICTURE_H
+ #define XFAPICTURE_H
+ 
++#include <map>
+ #include <optional>
+ #include <string>
++#include <vector>
+ 
+-// Values are canonical: numbers as "-1234.5", dates as "YYYY-MM-DD", text
+-// as it is. locale is a name such as "en_CA" or "fr_CA". A picture may
+-// hold alternatives separated by "|": the first that fits is used.
++// The symbols and default patterns of a locale, as a form's <localeSet>
++// defines them.
++struct XFALocale
++{
++    std::string name; // such as "en_CA"
++    std::vector<std::string> months, monthAbbrs, days, dayAbbrs; // from January, from Sunday
++    std::vector<std::string> meridiems, eras; // AM and PM; BC and AD
++    // Date and time patterns by style: "short", "med", "long" and "full".
++    std::map<std::string, std::string> datePatterns, timePatterns;
++    // Number patterns by kind: "numeric", "currency" and "percent".
++    std::map<std::string, std::string> numberPatterns;
++    // The locale's letters for the date and time symbols, in the order of
++    // "GyMdkHmsSEDFwWahKzZ".
++    std::string dateTimeSymbols;
++    std::string decimal, grouping, percent, minus;
++    std::string currencySymbol, currencyName;
++};
++
++// The built-in definition of a locale: French for names in "fr", English
++// otherwise, with Canadian and American variants.
++XFALocale XFABuiltinLocale(const std::string &name);
++
++// The locale named name: from locales if one has that name, else built in.
++// Nothing for a language that is neither among locales nor built in.
++std::optional<XFALocale> XFAFindLocale(const std::vector<XFALocale> &locales, const std::string &name);
++
++// pattern, written with the standard date and time symbols, written with the
++// locale's own letters instead, as for LocalDateFmt() and LocalTimeFmt().
++std::string XFALocalizePattern(const XFALocale &locale, const std::string &pattern, bool time);
++
++// Values are canonical: numbers as "-1234.5", dates as "YYYY-MM-DD", times
++// as "HH:MM:SS" with an optional ".FFF" and zone ("Z" for GMT, "+hh:mm";
++// none for local time), date-times as the date, "T" and the time, and text
++// as it is. A null value is the empty string. locale is the ambient locale,
++// such as "en_CA" or "fr_CA", and locales are those of the form. A picture
++// may hold alternatives separated by "|": the first that fits is used.
+ 
+ // The value formatted with picture, or nothing when it does not fit.
+-std::optional<std::string> XFAPictureFormat(const std::string &picture, const std::string &value, const std::string &locale);
++std::optional<std::string> XFAPictureFormat(const std::string &picture, const std::string &value, const std::string &locale, const std::vector<XFALocale> &locales = {});
+ 
+ // The canonical value of text formatted with picture, or nothing when the
+ // text does not match.
+-std::optional<std::string> XFAPictureParse(const std::string &picture, const std::string &text, const std::string &locale);
++std::optional<std::string> XFAPictureParse(const std::string &picture, const std::string &text, const std::string &locale, const std::vector<XFALocale> &locales = {});
+ 
+ #endif
+-- 
+2.43.0
+
