@@ -192,6 +192,7 @@ Evince (`patches/evince/`, about 1,150 added lines):
 | 0011 | Commit form editors outside GTK focus transitions |
 | 0012 | Unparent form editors before the view is finalized, fixing a teardown crash |
 | 0013 | Confirm script-requested URLs with an Allow/Block prompt, like Reader's Trust Manager |
+| 0014 | Allocate form editors at least their minimum size, also while a form reloads |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.

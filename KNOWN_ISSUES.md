@@ -34,26 +34,6 @@ safe default.
 
 ## Test and harness
 
-### 4. `/view/xfa-dialogs` crashes in the headless harness — P1 (for the test), pre-existing
-`tools/headless/check-dialogs.c`'s `xfa-dialogs` test aborts under the headless
-session: first a `gtk_widget_size_allocate()` with width -18, then (after a geometry
-tweak) "Trying to snapshot GtkEntry without a current allocation".
-
-**Confirmed pre-existing:** stashing all of this session's `ev-view.c` changes and
-rerunning against stock-patched Evince reproduces the same crash, so it is not caused
-by the URL-gate or teardown work. It is the prior session's unfinished harness WIP.
-
-**Why it matters:** the full `scripts/test-dialogs.sh` suite cannot run green until
-this is resolved; `/view/launch-url` and `/view/editor-document-change` pass in
-isolation. The crash is in the *test's* drive pattern (creating/triggering a form-field
-editor via the backend while a modal nested loop runs), so it is likely a test-side
-allocate/snapshot ordering problem, not a user-facing bug — but confirm that before
-dismissing it.
-
-**Fix:** investigate the form-field editor widget's allocate→snapshot cycle when the
-field is driven without a realized, sized view; either stabilise the test or fix the
-view if a real snapshot-before-allocation path exists outside the test.
-
 ### 5. Pending verification before publishing — P1
 Carried over from the prior session and still not done:
 - **Fresh public bootstrap + build test**, now that `upstream/zint` is a submodule —
@@ -119,5 +99,7 @@ lay it out the same way. Left as-is pending a counter-example.
 - Form-editor teardown crash on close-mid-edit (Evince 0012).
 - Integer overflow in image size arithmetic (poppler 0028).
 - glib API docs warn hosts that script URLs are unchecked (poppler 0029).
+- Form editors allocated below their minimum size, or not at all while a form
+  reloads, which crashed the `xfa-dialogs` headless test (Evince 0014).
 
 See the commit messages of those patches for detail.

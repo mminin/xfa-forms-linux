@@ -1,0 +1,92 @@
+From 6ed5ce304b625d59b0a75dd1ce4a108c594b36a2 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 12:20:15 -0700
+Subject: [PATCH] libview: Allocate form editors at least their minimum size
+
+The view allocated each child widget at the size of its form field on
+screen. At a small zoom that is less than a text editor's own padding,
+and GTK warns that the editor's text is allocated a negative size. While
+a document was loading, as when a form replaces its pages, the view also
+skipped allocating its children altogether, and GTK then warned about
+drawing an editor with no allocation.
+
+Allocate children at least their measured minimum size, and while the
+pages cannot place them, keep them allocated just outside the view.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libview/ev-view.c | 43 +++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 39 insertions(+), 4 deletions(-)
+
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 6f49c7a..10ee82a 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -4992,6 +4992,30 @@ ev_view_measure (GtkWidget* widget,
+ 		*minimum = *natural = requisition.height;
+ }
+ 
++/* GTK refuses to allocate a widget less than its minimum size, and at a
++ * small zoom a form field can be smaller than its editor's own padding.
++ * A hidden child is placed just outside the view. */
++static void
++ev_view_allocate_child (GtkWidget    *child,
++			GdkRectangle *area,
++			int           baseline,
++			gboolean      hidden)
++{
++	int min_width, min_height;
++
++	gtk_widget_measure (child, GTK_ORIENTATION_HORIZONTAL, -1,
++			    &min_width, NULL, NULL, NULL);
++	area->width = MAX (area->width, min_width);
++	gtk_widget_measure (child, GTK_ORIENTATION_VERTICAL, area->width,
++			    &min_height, NULL, NULL, NULL);
++	area->height = MAX (area->height, min_height);
++	if (hidden) {
++		area->x = -area->width;
++		area->y = -area->height;
++	}
++	gtk_widget_size_allocate (child, area, baseline);
++}
++
+ static void
+ ev_view_size_allocate (GtkWidget      *widget,
+ 		       int             width,
+@@ -5001,8 +5025,21 @@ ev_view_size_allocate (GtkWidget      *widget,
+ 	EvView *view = EV_VIEW (widget);
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
+ 
+-	if (!priv->document || ev_view_is_loading (view))
++	if (!priv->document || ev_view_is_loading (view)) {
++		/* The pages cannot place child widgets now, as when a form
++		 * replaces its document, but GTK draws only allocated
++		 * children: keep them allocated, out of sight. */
++		for (GtkWidget *child = gtk_widget_get_first_child (widget);
++		     child != NULL;
++		     child = gtk_widget_get_next_sibling (child)) {
++			GdkRectangle hidden = { 0, 0, 0, 0 };
++
++			if (g_object_get_data (G_OBJECT (child), "ev-child") &&
++			    gtk_widget_get_visible (child))
++				ev_view_allocate_child (child, &hidden, baseline, TRUE);
++		}
+ 		return;
++	}
+ 
+ 	if (priv->sizing_mode == EV_SIZING_FIT_WIDTH ||
+ 	    priv->sizing_mode == EV_SIZING_FIT_PAGE ||
+@@ -5035,9 +5072,7 @@ ev_view_size_allocate (GtkWidget      *widget,
+ 		view_area.y -= priv->scroll_y;
+ 
+ 		gtk_widget_set_size_request (child, view_area.width, view_area.height);
+-		// TODO: this is a temporary solution to eliminate the warning
+-		gtk_widget_measure (child, GTK_ORIENTATION_HORIZONTAL, view_area.width, NULL, NULL, NULL, NULL);
+-		gtk_widget_size_allocate (child, &view_area, baseline);
++		ev_view_allocate_child (child, &view_area, baseline, FALSE);
+ 	}
+ 
+ 	if (priv->link_preview.popover)
+-- 
+2.43.0
+
