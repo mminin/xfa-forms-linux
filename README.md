@@ -145,7 +145,7 @@ touching your desktop. See the comments in `run-session.sh` and `drive.py`.
 
 ## Patches
 
-Poppler (`patches/poppler/`, about 13,100 added lines):
+Poppler (`patches/poppler/`, about 13,200 added lines):
 
 | Patch | What it does |
 |---|---|
@@ -171,6 +171,7 @@ Poppler (`patches/poppler/`, about 13,100 added lines):
 | 0024 | Reject corrupt saved state; handle deeply nested or incomplete templates |
 | 0025 | `pdfxfa` reports errors when flushing its output |
 | 0026 | Refuse truncated TIFF and GIF images, which could claim huge sizes |
+| 0027 | Bound recursive tree walks so a script cannot overflow the stack |
 
 Evince (`patches/evince/`, about 1,000 added lines):
 
@@ -208,6 +209,8 @@ Most of this code was written with AI coding assistants: Anthropic's Claude (com
 carrying a `Co-Authored-By: Claude` line) and OpenAI Codex using **GPT-6.1 Sol**
 (`gpt-6.1-sol`, reasoning effort `high`; Poppler 0008–0009 and 0022–0025; Evince 0007–0008 and 0010–0011).
 The model and effort were verified against the local Codex session records.
+Poppler 0026–0027 were written by Claude Opus (5.5 and 4.8 respectively),
+as their commit trailers record.
 The [PR plan](PR_PLAN.md) records the contribution breakdown and attribution to
 carry into upstream submissions. The human maintainer, mminin <mminin2010@gmail.com>, directed
 the work and is responsible for it. Mozilla's

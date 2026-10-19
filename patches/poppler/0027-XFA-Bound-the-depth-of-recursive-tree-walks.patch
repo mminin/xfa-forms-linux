@@ -1,0 +1,383 @@
+From 1419ef8e92e029b500b491d5ba1a4825654f97dd Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 10:55:30 -0700
+Subject: [PATCH] XFA: Bound the depth of recursive tree walks
+
+The XML parser refuses input nested deeper than 256, but scripts build
+nodes one at a time and can assemble a tree far deeper than that. The
+recursive walks over a node tree -- serialization, cloning, data merging,
+SOM name resolution, state capture and layout -- then overflow the stack.
+A docReady script that builds a chain some tens of thousands deep and
+calls saveXML() or relayout() crashes the viewer when the form opens, with
+no user interaction.
+
+Bound each walk to XFANodeMaxDepth (500) rather than trusting the tree's
+shape: past the limit serialization truncates (staying well-formed) and
+layout stops descending. The limit is far above any real form and far
+below the call depth that overflows the stack. A glib test checks that a
+2000-deep script tree serializes to the bounded size, and the qa suite
+checks that building and saving a deep tree under a small stack does not
+crash.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ glib/tests/check_xfa.c | 39 ++++++++++++++++++++++++++++++++++++++
+ poppler/XFAForm.cc     | 43 ++++++++++++++++++++++++++++--------------
+ poppler/XFAForm.h      |  2 +-
+ poppler/XFALayout.cc   | 25 ++++++++++++++++++++----
+ poppler/XFANode.cc     | 17 +++++++++++------
+ poppler/XFANode.h      | 12 ++++++++++--
+ 6 files changed, 111 insertions(+), 27 deletions(-)
+
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index fd5ffc5..e4700fd 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -1175,6 +1175,44 @@ static void test_default_ui(void)
+     g_bytes_unref(bytes);
+ }
+ 
++/* A script builds a data tree far deeper than the parser's limit and then
++ * serializes it. The recursive walkers cap their own depth, so the save is
++ * truncated rather than overflowing the stack: a 2000-deep chain serializes
++ * to the same bounded size as the ~500-node cap, well under what the whole
++ * chain would produce. */
++static void test_deep_script_tree(void)
++{
++    const char *xml = "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                      "<subform name=\"form1\" layout=\"tb\"><pageSet><pageArea name=\"Page1\">"
++                      "<contentArea x=\"1in\" y=\"1in\" w=\"6.5in\" h=\"9in\"/>"
++                      "<medium stock=\"letter\" short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
++                      "<field name=\"out\" w=\"6in\" h=\"0.3in\" access=\"nonInteractive\"><ui><textEdit/></ui>"
++                      "<event activity=\"initialize\"><script contentType=\"application/x-javascript\">"
++                      "var root = xfa.datasets.createNode(\"dataGroup\", \"deep\"); var cur = root;"
++                      "for (var i = 0; i != 2000; i = i + 1) {"
++                      "  var c = xfa.datasets.createNode(\"dataGroup\", \"n\"); cur.nodes.append(c); cur = c; }"
++                      "var len = root.saveXML().length;"
++                      "this.rawValue = (len > 30000) ? (\"DEEPBAD\" + len) : \"DEEPOK\";"
++                      "</script></event></field></subform></template>";
++    GBytes *bytes = build_pdf_from(xml);
++    GError *err = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &err);
++    g_assert_no_error(err);
++    PopplerDocument *rendered = poppler_document_render_xfa(source, &err);
++    g_assert_no_error(err);
++    g_assert_nonnull(rendered);
++    char *text = page_text(rendered);
++    if (!strstr(text, "DEEP")) {
++        g_test_skip("poppler was built without XFA scripting");
++    } else {
++        g_assert_nonnull(strstr(text, "DEEPOK"));
++    }
++    g_free(text);
++    g_object_unref(rendered);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -1195,5 +1233,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/xml-depth", test_xml_depth);
+     g_test_add_func("/xfa/invalid-state-type", test_invalid_state_type);
+     g_test_add_func("/xfa/default-ui", test_default_ui);
++    g_test_add_func("/xfa/deep-script-tree", test_deep_script_tree);
+     return g_test_run();
+ }
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 42739b1..9bc1cfb 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -244,8 +244,11 @@ bool isTransparent(const XFANode *n)
+     return n->getNamespace() == XFANode::Namespace::XFA && (c == "area" || ((c == "subform" || c == "subformSet") && n->getName().empty()));
+ }
+ 
+-void collectNamed(const XFANode *node, const std::string &name, std::vector<XFANode *> &out)
++void collectNamed(const XFANode *node, const std::string &name, std::vector<XFANode *> &out, int depth = 0)
+ {
++    if (depth >= XFANodeMaxDepth) {
++        return;
++    }
+     for (const auto &c : node->getChildren()) {
+         if (c->isText()) {
+             continue;
+@@ -254,7 +257,7 @@ void collectNamed(const XFANode *node, const std::string &name, std::vector<XFAN
+         if (n && *n == name) {
+             out.push_back(c.get());
+         } else if (isTransparent(c.get())) {
+-            collectNamed(c.get(), name, out);
++            collectNamed(c.get(), name, out, depth + 1);
+         }
+     }
+ }
+@@ -391,8 +394,8 @@ std::string XFAForm::scriptSource(const XFANode *s, bool *runnable)
+ // Loading
+ //------------------------------------------------------------------------
+ 
+-static void mergeData(XFAForm *form, XFANode *node, const XFANode *data, bool skipEmpty);
+-static void markData(XFANode *node);
++static void mergeData(XFAForm *form, XFANode *node, const XFANode *data, bool skipEmpty, int depth = 0);
++static void markData(XFANode *node, int depth = 0);
+ 
+ XFAForm::XFAForm() = default;
+ 
+@@ -1711,8 +1714,11 @@ static bool bindsData(const XFANode *n)
+     return !bind || bind->getAttr("match", "once") != "none";
+ }
+ 
+-static void saveDataInto(const XFAForm *form, XFANode *node, std::string &out)
++static void saveDataInto(const XFAForm *form, XFANode *node, std::string &out, int depth = 0)
+ {
++    if (depth >= XFANodeMaxDepth) {
++        return;
++    }
+     for (const auto &c : node->getChildren()) {
+         if (c->isText() || !c->isContainer()) {
+             continue;
+@@ -1729,10 +1735,10 @@ static void saveDataInto(const XFAForm *form, XFANode *node, std::string &out)
+             const std::optional<std::string> v = form->getRawValue(c.get());
+             out += "<" + name + ">" + XFAEscapeXML(v.value_or("")) + "</" + name + ">";
+         } else if (name.empty()) {
+-            saveDataInto(form, c.get(), out);
++            saveDataInto(form, c.get(), out, depth + 1);
+         } else {
+             out += "<" + name + ">";
+-            saveDataInto(form, c.get(), out);
++            saveDataInto(form, c.get(), out, depth + 1);
+             out += "</" + name + ">";
+         }
+     }
+@@ -1765,8 +1771,11 @@ void XFAForm::loadData(const std::string &xml, bool ignoreRoot, bool /*overwrite
+ 
+ // Values of matching names in data go into the fields of node. With
+ // skipEmpty, empty data values leave the fields' default values.
+-static void mergeData(XFAForm *form, XFANode *node, const XFANode *data, bool skipEmpty)
++static void mergeData(XFAForm *form, XFANode *node, const XFANode *data, bool skipEmpty, int depth)
+ {
++    if (depth >= XFANodeMaxDepth) {
++        return;
++    }
+     std::map<std::string, int> seen;
+     for (const auto &c : node->getChildren()) {
+         if (c->isText() || !c->isContainer() || c->getClassName() == "draw" || !bindsData(c.get())) {
+@@ -1774,7 +1783,7 @@ static void mergeData(XFAForm *form, XFANode *node, const XFANode *data, bool sk
+         }
+         const std::string name = c->getName();
+         if (name.empty()) {
+-            mergeData(form, c.get(), data, skipEmpty);
++            mergeData(form, c.get(), data, skipEmpty, depth + 1);
+             continue;
+         }
+         const int index = seen[name]++;
+@@ -1795,7 +1804,7 @@ static void mergeData(XFAForm *form, XFANode *node, const XFANode *data, bool sk
+                 form->setRawValue(c.get(), v.empty() ? std::nullopt : std::optional<std::string>(v));
+             }
+         } else {
+-            mergeData(form, c.get(), match, skipEmpty);
++            mergeData(form, c.get(), match, skipEmpty, depth + 1);
+         }
+     }
+ }
+@@ -1819,11 +1828,14 @@ void XFAForm::applyPendingData(XFANode *node)
+     mergeData(this, node, match ? match : data.get(), false);
+ }
+ 
+-static void markData(XFANode *node)
++static void markData(XFANode *node, int depth)
+ {
+     node->setNamespace(XFANode::Namespace::Data);
++    if (depth >= XFANodeMaxDepth) {
++        return;
++    }
+     for (const auto &c : node->getChildren()) {
+-        markData(c.get());
++        markData(c.get(), depth + 1);
+     }
+ }
+ 
+@@ -1881,8 +1893,11 @@ void XFAForm::doRemerge()
+ // Viewer interface
+ //------------------------------------------------------------------------
+ 
+-void XFAForm::collectFieldValues(XFANode *node, std::vector<std::pair<int, std::string>> &values) const
++void XFAForm::collectFieldValues(XFANode *node, std::vector<std::pair<int, std::string>> &values, int depth) const
+ {
++    if (depth >= XFANodeMaxDepth) {
++        return;
++    }
+     for (const auto &c : node->getChildren()) {
+         if (c->isText() || !c->isContainer()) {
+             continue;
+@@ -1892,7 +1907,7 @@ void XFAForm::collectFieldValues(XFANode *node, std::vector<std::pair<int, std::
+             values.emplace_back(c->getSerial(), v ? "=" + *v : std::string("null"));
+         }
+         if (c->getClassName() != "field") {
+-            collectFieldValues(c.get(), values);
++            collectFieldValues(c.get(), values, depth + 1);
+         }
+     }
+ }
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index 3cfc40e..3e83929 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -247,7 +247,7 @@ private:
+     };
+     VisibleState visibleState();
+     bool afterChange(XFANode *editedField, const std::optional<std::string> &shownValue);
+-    void collectFieldValues(XFANode *node, std::vector<std::pair<int, std::string>> &values) const;
++    void collectFieldValues(XFANode *node, std::vector<std::pair<int, std::string>> &values, int depth = 0) const;
+     XFANode *fieldByName(const std::string &fieldName) const;
+     void fireEnterEvents(XFANode *node);
+     void doRemerge();
+diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
+index 55a2946..30a6ada 100644
+--- a/poppler/XFALayout.cc
++++ b/poppler/XFALayout.cc
+@@ -260,10 +260,13 @@ private:
+     const XFANode *nextPageArea() const;
+     void newPage(const XFANode *area);
+     void dropEmptyPage();
+-    void place(const Box &b, double px, double py, XFALayoutPage &page, int pageIndex);
++    void place(const Box &b, double px, double py, XFALayoutPage &page, int pageIndex, int depth = 0);
+ 
+     XFAForm *form;
+     XFALayoutResult result;
++    // Measuring recurses with the node tree; a script can build that tree
++    // arbitrarily deep, so the recursion is bounded rather than the input.
++    int measureDepth = 0;
+     std::vector<const XFANode *> pageAreas;
+     std::map<const XFANode *, int> areaUses;
+     std::optional<PageState> page;
+@@ -279,6 +282,17 @@ Box Layouter::measure(XFANode *node, double availW, std::optional<double> forced
+ {
+     Box b;
+     b.node = node;
++    // Stop descending past the depth limit, leaving an empty box. Only a tree
++    // a script has nested abnormally deep ever reaches this.
++    if (measureDepth >= XFANodeMaxDepth) {
++        return b;
++    }
++    struct DepthGuard
++    {
++        int &d;
++        explicit DepthGuard(int &x) : d(x) { ++d; }
++        ~DepthGuard() { --d; }
++    } guard(measureDepth);
+     b.margin = XFAMarginOf(node);
+     const std::string &cls = node->getClassName();
+     if (cls == "draw") {
+@@ -990,11 +1004,14 @@ void Layouter::dropEmptyPage()
+     }
+ }
+ 
+-void Layouter::place(const Box &b, double px, double py, XFALayoutPage &lp, int pageIndex)
++void Layouter::place(const Box &b, double px, double py, XFALayoutPage &lp, int pageIndex, int depth)
+ {
++    if (depth >= XFANodeMaxDepth) {
++        return;
++    }
+     if (b.fragmentRow) {
+         for (const Box &c : b.children) {
+-            place(c, px + c.x, py + c.y, lp, pageIndex);
++            place(c, px + c.x, py + c.y, lp, pageIndex, depth + 1);
+         }
+         return;
+     }
+@@ -1011,7 +1028,7 @@ void Layouter::place(const Box &b, double px, double py, XFALayoutPage &lp, int
+     lp.items.push_back(item);
+     result.pageOfNode.emplace(b.node->getSerial(), pageIndex);
+     for (const Box &c : b.children) {
+-        place(c, px + c.x, py + c.y, lp, pageIndex);
++        place(c, px + c.x, py + c.y, lp, pageIndex, depth + 1);
+     }
+ }
+ 
+diff --git a/poppler/XFANode.cc b/poppler/XFANode.cc
+index 08caf75..7ef8451 100644
+--- a/poppler/XFANode.cc
++++ b/poppler/XFANode.cc
+@@ -193,15 +193,17 @@ bool XFANode::isContainer() const
+     return ns == Namespace::XFA && std::ranges::any_of(containers, [this](const char *c) { return className == c; });
+ }
+ 
+-std::unique_ptr<XFANode> XFANode::clone(XFADom *targetDom) const
++std::unique_ptr<XFANode> XFANode::clone(XFADom *targetDom, int depth) const
+ {
+     auto copy = std::make_unique<XFANode>(targetDom, className);
+     copy->ns = ns;
+     copy->text = text;
+     copy->attributes = attributes;
+     copy->proto = proto ? proto : this;
+-    for (const auto &c : children) {
+-        copy->appendChild(c->clone(targetDom));
++    if (depth < XFANodeMaxDepth) {
++        for (const auto &c : children) {
++            copy->appendChild(c->clone(targetDom, depth + 1));
++        }
+     }
+     return copy;
+ }
+@@ -231,7 +233,7 @@ std::string XFAEscapeXML(const std::string &s)
+     return res;
+ }
+ 
+-std::string XFANode::toXML() const
++std::string XFANode::toXML(int depth) const
+ {
+     if (isText()) {
+         return XFAEscapeXML(text);
+@@ -240,12 +242,15 @@ std::string XFANode::toXML() const
+     for (const auto &a : attributes) {
+         res += " " + a.first + "=\"" + XFAEscapeXML(a.second) + "\"";
+     }
+-    if (children.empty()) {
++    // Past the depth limit the node is serialized without its descendants.
++    // The result stays well-formed, only truncated, which only affects trees
++    // a script has nested abnormally deep.
++    if (children.empty() || depth >= XFANodeMaxDepth) {
+         return res + "/>";
+     }
+     res += ">";
+     for (const auto &c : children) {
+-        res += c->toXML();
++        res += c->toXML(depth + 1);
+     }
+     return res + "</" + className + ">";
+ }
+diff --git a/poppler/XFANode.h b/poppler/XFANode.h
+index d2c8ac1..35cdff0 100644
+--- a/poppler/XFANode.h
++++ b/poppler/XFANode.h
+@@ -40,6 +40,14 @@ private:
+     int nextSerial = 1;
+ };
+ 
++// Recursive walks over a node tree (serialization, cloning, layout, data
++// merging) are bounded to this depth. The XML parser refuses input nested
++// deeper than 256, but scripts build nodes one at a time and can bypass that,
++// so the walks guard themselves rather than trust the tree's shape. The limit
++// is far above any real form and far below the call depth that overflows the
++// stack.
++inline constexpr int XFANodeMaxDepth = 500;
++
+ // A node of an XFA template, form or rich text DOM. Elements and character
+ // data share this class; character data nodes have the class name "#text".
+ class XFANode
+@@ -106,10 +114,10 @@ public:
+ 
+     // Deep copy into dom. Form nodes made from template nodes remember the
+     // template node as their proto.
+-    std::unique_ptr<XFANode> clone(XFADom *targetDom) const;
++    std::unique_ptr<XFANode> clone(XFADom *targetDom, int depth = 0) const;
+ 
+     // Serializes this node and its descendants as XML.
+-    std::string toXML() const;
++    std::string toXML(int depth = 0) const;
+ 
+ private:
+     XFADom *dom;
+-- 
+2.43.0
+
