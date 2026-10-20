@@ -1,5 +1,32 @@
 # Editing and printing audits
 
+## Ubuntu 0.1.0-1 package verification — 2026-10-20
+
+The amd64 package is built at `/opt/xfa-forms-linux` in a private mount namespace
+on Ubuntu 24.04. A separate application ID, `org.gnome.Evince.XFA`, keeps its
+desktop entry and D-Bus service separate from system and development viewers.
+Evince patch 0022 adds the application-ID build option and installs the selected
+profile's artwork under that ID; it does not change form or rendering behavior.
+
+Two clean Ubuntu 24.04 containers were used: one installed only the package and
+its runtime dependencies, and another already had system Evince. Installation
+and removal succeeded. Hashes of the system viewer, its Poppler library and an
+existing user PDF-default configuration stayed unchanged. Removal deleted the
+private prefix, commands and desktop entry.
+
+As an ordinary user in the coexistence container, the packaged libraries passed
+28 core regressions, 71 FormCalc expressions, 15 GUI checks and 14 printing
+scenarios. The actual installed launcher opened ordinary and XFA PDFs using its
+own backend. Printing selected Print to File throughout.
+
+The payload audit checks root ownership, 0755 directory/executable and 0644 data
+permissions, and absence of developer-home paths and SDK headers. The complete
+source archive contains all four applied upstream trees, notices, build tools
+and a per-file checksum manifest. Its inputs were verified without Git metadata;
+the package build compiles that same source layout with network access disabled.
+Six complete-source tests and 14 release-asset tests cover source integrity and
+the association between the public commit, binary and source checksums.
+
 ## 0.1.0 source-release verification — 2026-10-20
 
 The archive generated from public candidate `526964b` was extracted into a fresh
@@ -21,9 +48,10 @@ The extracted build passed:
 
 These are normal-build release checks. The earlier sanitizer and corpus audits
 below cover the same engine patch trees; they were not repeated for packaging.
-The final source package adds this verification documentation to the tested
-candidate without changing its patches, build scripts or tests. Checksums and
-the public source commit are recorded in the generated release assets.
+That source-only candidate added verification documentation without changing its
+patches, build scripts or tests. The later Ubuntu packaging adds Evince 0022 and
+the packaging tools described above. Checksums and the public source commit are
+recorded in the generated release assets.
 
 ## Printing follow-up — 2026-10-20
 

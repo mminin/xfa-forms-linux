@@ -62,6 +62,13 @@ Ubuntu 24.04 container before publishing. Verify all release checksums and ship
 the complete source alongside the binary. The combined release manifest rejects
 binaries built from another public commit or altered assets.
 
+`python3 tools/qa/test_ubuntu_package.py` checks complete-source integrity;
+`python3 tools/qa/test_release.py` also checks binary/source asset association.
+The printing driver accepts `XFA_TEST_PREFIX`, `XFA_TEST_LAUNCHER` and
+`XFA_TEST_PRINT_DRIVER` for tests against an installed package. Run it with the
+installed launcher's environment, including the private `bin` directory first
+in `PATH`.
+
 ## Publication
 
 Once the candidate and destination are approved, create an annotated `v0.1.0` tag

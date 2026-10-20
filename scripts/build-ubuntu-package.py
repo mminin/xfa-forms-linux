@@ -277,6 +277,8 @@ Description: Experimental PDF viewer with dynamic XFA form support
         for p in sorted(payload.rglob("*")) if p.is_file() and not p.is_symlink() and control_dir not in p.parents))
     epoch = info["source_date_epoch"]
     for path in [payload, *payload.rglob("*")]:
+        if not path.is_symlink():
+            path.chmod(0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644)
         os.utime(path, (epoch, epoch), follow_symlinks=False)
     target = output / f"{PACKAGE}_{version}_amd64.deb"
     env = dict(os.environ, SOURCE_DATE_EPOCH=str(epoch))
