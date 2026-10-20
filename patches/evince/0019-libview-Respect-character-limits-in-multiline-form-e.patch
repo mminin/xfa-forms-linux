@@ -1,4 +1,4 @@
-From cdf057dc98efc4d520beb9b41d94840e355fdf75 Mon Sep 17 00:00:00 2001
+From 00969fa432f4e7fe18dbf418ea6a6cc447987c68 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:11:16 -0700
 Subject: [PATCH] libview: Respect character limits in multiline form editors

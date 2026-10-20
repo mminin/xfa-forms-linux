@@ -1,4 +1,4 @@
-From 4308fc5a4608cc1c473a551f21df2584c5f31030 Mon Sep 17 00:00:00 2001
+From 39a3c76acbd8a54a9afe9ec282b4a5679e9a402f Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:47:09 -0700
 Subject: [PATCH] XFA: Exclude host dialogs from script execution deadlines
@@ -99,7 +99,7 @@ index c0ad4c7..ba3fa19 100644
      /* The question was answered: nothing to report. */
      gchar **messages = poppler_document_xfa_take_messages(rendered);
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 9452981..9db85ab 100644
+index d248d0c..45f359b 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -1607,8 +1607,10 @@ void XFAForm::hostMessage(const std::string &title, const std::string &text)
@@ -126,7 +126,7 @@ index 9452981..9db85ab 100644
  
  void XFAForm::hostLaunchURL(const std::string &url)
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 30c4517..c965b07 100644
+index 883c945..c4a10f5 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -1397,12 +1397,19 @@ NATIVE(question)

@@ -1,4 +1,4 @@
-From c1675a84a638ca55be5a193331d130221516fbff Mon Sep 17 00:00:00 2001
+From 6d39a10347aaa060dd3eda17015dd1030426cbf1 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 15:21:11 -0700
 Subject: [PATCH] XFA: Bound the depth of preorder walks
@@ -15,7 +15,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 2c21e46..44f0dba 100644
+index c107220..b9b0a30 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -336,12 +336,15 @@ int initialCount(const XFANode *templ)

@@ -1,4 +1,4 @@
-From 7478941697971ef2e94f1330577032ce9da35709 Mon Sep 17 00:00:00 2001
+From c1730cc6474310574924b7b7480f562b9c76c599 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:08:58 -0700
 Subject: [PATCH] glib: Do not pass unselecting all choice items on to XFA

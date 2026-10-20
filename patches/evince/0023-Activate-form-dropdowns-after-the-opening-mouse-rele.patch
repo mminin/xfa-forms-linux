@@ -1,4 +1,4 @@
-From cc4d44caeb2c7b42949572cb13dc846c13cf7cba Mon Sep 17 00:00:00 2001
+From baae8eb4016e3baeb6030ac32aede8091b957dd0 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 20 Oct 2026 11:33:34 -0700
 Subject: [PATCH] Activate form dropdowns after the opening mouse release

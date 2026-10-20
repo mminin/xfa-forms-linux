@@ -1,4 +1,4 @@
-From b11a0e4deda9706252f171d91c3c5abc40b1f007 Mon Sep 17 00:00:00 2001
+From 633ab0ff48f5194dd5351ecd07665e891b71b17a Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 17:37:17 -0700
 Subject: [PATCH] libview: Keep edits in multiline form fields

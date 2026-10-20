@@ -1,4 +1,4 @@
-From 54f5e8876cfe8cfd7be792cebaa9960bd666c32c Mon Sep 17 00:00:00 2001
+From 3567391e5ece0fbe5f47d2500407d507f9cbad28 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:28:23 -0700
 Subject: [PATCH] XFA: Resolve paths ending in an instance manager
@@ -16,7 +16,7 @@ Co-authored-by: Codex <noreply@openai.com>
  1 file changed, 20 insertions(+), 1 deletion(-)
 
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index df0593f..b0ef495 100644
+index 287e473..060efd6 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -179,10 +179,23 @@ function somResolve(id, som, inherit) {

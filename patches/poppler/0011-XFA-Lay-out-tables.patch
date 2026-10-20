@@ -1,4 +1,4 @@
-From b7ad06933314bf4f9a378ef2f011ed0e68ff434a Mon Sep 17 00:00:00 2001
+From e2baaa4793d26a259f4a45d09392e6748e01524a Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:31:36 -0700
 Subject: [PATCH] XFA: Lay out tables
@@ -107,7 +107,7 @@ index 6a9604b..3cbb5bf 100644
      return g_test_run();
  }
 diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
-index f6ce600..54abf63 100644
+index a1528f1..71b2012 100644
 --- a/poppler/XFALayout.cc
 +++ b/poppler/XFALayout.cc
 @@ -17,6 +17,8 @@

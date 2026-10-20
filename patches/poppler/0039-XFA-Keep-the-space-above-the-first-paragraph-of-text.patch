@@ -1,4 +1,4 @@
-From e8098e5a381804a331b3bb5cbbe31ba212dc7ea4 Mon Sep 17 00:00:00 2001
+From 334c2c5468ad686068731487bac3428fc14b5155 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 16:06:02 -0700
 Subject: [PATCH] XFA: Keep the space above the first paragraph of text
@@ -16,7 +16,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 4 insertions(+), 2 deletions(-)
 
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index 8e851a5..ed08782 100644
+index 29dbfa0..db4ea5b 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -539,9 +539,11 @@ void Writer::drawText(const std::vector<XFAParagraph> &paras, const XFAPara &par

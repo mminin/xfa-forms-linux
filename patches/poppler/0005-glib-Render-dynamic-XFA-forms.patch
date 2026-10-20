@@ -1,4 +1,4 @@
-From c81e8862923c5964f43e86050b0f1907397dd50d Mon Sep 17 00:00:00 2001
+From 5f88dfda7dda4ff3a13f1b226003ffde613e1cc4 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:03:52 -0700
 Subject: [PATCH] glib: Render dynamic XFA forms
@@ -453,7 +453,7 @@ index fe7d7b4..6da3313 100644
  poppler_font_info_new
  poppler_font_info_scan
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 76a2f29..103efb4 100644
+index 366bdac..49b2c8e 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -1246,6 +1246,19 @@ std::vector<XFAHostRequest> XFAForm::takeHostRequests()
@@ -477,7 +477,7 @@ index 76a2f29..103efb4 100644
  {
      if (log.size() < 1000) {
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index bef575f..d38562a 100644
+index 464e05c..e31a519 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -76,6 +76,7 @@ public:
@@ -489,7 +489,7 @@ index bef575f..d38562a 100644
      // Number of times the visible form changed so far.
      unsigned int getChangeCount() const { return changeCount; }
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index 80ec5a8..4046d88 100644
+index 352206b..463071f 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -811,15 +811,34 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub

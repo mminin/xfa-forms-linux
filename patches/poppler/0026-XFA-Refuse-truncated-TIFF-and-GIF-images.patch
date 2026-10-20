@@ -1,4 +1,4 @@
-From b8e7778e28622ade971a52fa9778faea9f6d6b67 Mon Sep 17 00:00:00 2001
+From 26d5cc3c48dc74ec2fa4b47f306dba6e55247513 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Sun, 18 Oct 2026 19:13:33 -0700
 Subject: [PATCH] XFA: Refuse truncated TIFF and GIF images
@@ -14,7 +14,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 22 insertions(+), 4 deletions(-)
 
 diff --git a/poppler/XFAImage.cc b/poppler/XFAImage.cc
-index 8a4e72d..cf98aab 100644
+index 49ef718..e643b41 100644
 --- a/poppler/XFAImage.cc
 +++ b/poppler/XFAImage.cc
 @@ -447,7 +447,11 @@ bool decodeGIF(const std::string &d, XFAImage &img)

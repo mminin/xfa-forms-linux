@@ -1,4 +1,4 @@
-From b870c481cacea3dae77e364d2ae66ef3e15f3a1b Mon Sep 17 00:00:00 2001
+From e02d6b2a57f9b7baee2838da1757f2e672ac8a86 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:18:00 -0700
 Subject: [PATCH] shell: Select text in the active editor with Select All

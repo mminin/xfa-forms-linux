@@ -1,4 +1,4 @@
-From 3c2517755137bd0855641dbbcfd611be94e69f6c Mon Sep 17 00:00:00 2001
+From efd115a1947e3429973e0b1d1450a46fe3393e77 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:20:49 -0700
 Subject: [PATCH] XFA: Count all class siblings in anonymous SOM expressions
@@ -14,7 +14,7 @@ Co-authored-by: Codex <noreply@openai.com>
  1 file changed, 16 insertions(+), 1 deletion(-)
 
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 8a7fced..89f5dd1 100644
+index 2dd6fca..4c7c5c4 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -738,7 +738,22 @@ std::string XFAForm::somExpression(XFANode *node) const

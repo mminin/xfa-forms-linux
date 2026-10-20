@@ -1,4 +1,4 @@
-From 85f8f60f899fe9cf4444e7d332fff9c6352c3ac9 Mon Sep 17 00:00:00 2001
+From def9b13b6b2062595e36c66716167eff314766ef Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 14:48:39 -0700
 Subject: [PATCH] XFA: Support SOM predicates
@@ -78,7 +78,7 @@ index 40804a3..89d8877 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAFormCalc.cc b/poppler/XFAFormCalc.cc
-index e64cba1..6e0a8e4 100644
+index 8972bec..fa2ae62 100644
 --- a/poppler/XFAFormCalc.cc
 +++ b/poppler/XFAFormCalc.cc
 @@ -250,7 +250,7 @@ const std::set<std::string> &builtins()
@@ -134,7 +134,7 @@ index e64cba1..6e0a8e4 100644
      return translator.run(error);
  }
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 9aa7af9..46c47ea 100644
+index b3f2e1f..3addf8a 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -130,15 +130,64 @@ InstanceManager.prototype = {

@@ -1,4 +1,4 @@
-From a2345f340b73b138efb8e777488a8143d222fb83 Mon Sep 17 00:00:00 2001
+From 60915bad5549cde2bc26c3b4f6427596fe9a63f4 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 12:32:14 -0700
 Subject: [PATCH] libview: Show saved values in form editors opened before the

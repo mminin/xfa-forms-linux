@@ -1,4 +1,4 @@
-From 3ae22ce2ab560774d9cb2f1b591aea079df63ad3 Mon Sep 17 00:00:00 2001
+From 613ea44fd678d78b6e119e672b181f45dc83908a Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 14:52:45 -0700
 Subject: [PATCH] XFA: Make event.target Acrobat's Doc object
@@ -69,7 +69,7 @@ index 89d8877..5c0b891 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 46c47ea..090de4a 100644
+index 3addf8a..0d0ad25 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -416,11 +416,30 @@ function scopeFor(id) {

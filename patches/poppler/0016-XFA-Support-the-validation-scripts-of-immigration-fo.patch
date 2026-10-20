@@ -1,4 +1,4 @@
-From 246bcdfc64296f646a98e8252e8942a15fb66d51 Mon Sep 17 00:00:00 2001
+From 9a316ec4ecfbecea6194c0cacc8a3af4e247ef23 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:08:28 -0700
 Subject: [PATCH] XFA: Support the validation scripts of immigration forms
@@ -21,7 +21,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  2 files changed, 35 insertions(+), 5 deletions(-)
 
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index f6fb317..a650b17 100644
+index 9f7d237..4632ed6 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -370,6 +370,7 @@ std::string XFAForm::scriptSource(const XFANode *s, bool *runnable)
@@ -41,7 +41,7 @@ index f6fb317..a650b17 100644
          }
          sources.push_back(std::move(src));
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 2b6e7ed..cfaab80 100644
+index aa11e19..b3cae79 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -35,6 +35,7 @@ var cache = new Map();

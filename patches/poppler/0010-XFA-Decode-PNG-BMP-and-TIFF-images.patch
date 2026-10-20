@@ -1,4 +1,4 @@
-From 03a204940f3c00b36574d4f568f872eac262b9e1 Mon Sep 17 00:00:00 2001
+From e28b9debfcf0cfdc5ad424704c170d3977811231 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:30:22 -0700
 Subject: [PATCH] XFA: Decode PNG, BMP and TIFF images
@@ -182,7 +182,7 @@ index 339d02a..6a9604b 100644
  }
 diff --git a/poppler/XFAImage.cc b/poppler/XFAImage.cc
 new file mode 100644
-index 0000000..8a4e72d
+index 0000000..49ef718
 --- /dev/null
 +++ b/poppler/XFAImage.cc
 @@ -0,0 +1,812 @@
@@ -1000,7 +1000,7 @@ index 0000000..8a4e72d
 +}
 diff --git a/poppler/XFAImage.h b/poppler/XFAImage.h
 new file mode 100644
-index 0000000..98fa649
+index 0000000..a33bdfb
 --- /dev/null
 +++ b/poppler/XFAImage.h
 @@ -0,0 +1,35 @@
@@ -1040,7 +1040,7 @@ index 0000000..98fa649
 +
 +#endif
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index 04c350a..aa0e39c 100644
+index d60d7fe..e722a44 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -12,15 +12,14 @@

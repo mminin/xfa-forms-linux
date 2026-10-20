@@ -1,4 +1,4 @@
-From 9c228b973fb02251c6512aaca86e6201a165480c Mon Sep 17 00:00:00 2001
+From 84419ddc6c42b744377e62240f64259d4869e880 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:22:04 -0700
 Subject: [PATCH] XFA: Break pages after objects, keep objects together, repeat
@@ -114,7 +114,7 @@ index 3cb2657..df2f68d 100644
      return g_test_run();
  }
 diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
-index 54abf63..55a2946 100644
+index 71b2012..0302127 100644
 --- a/poppler/XFALayout.cc
 +++ b/poppler/XFALayout.cc
 @@ -157,9 +157,18 @@ struct Box

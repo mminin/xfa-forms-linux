@@ -1,4 +1,4 @@
-From adbce142ed50ef95a5426a646548022e6ec8441e Mon Sep 17 00:00:00 2001
+From c1dda4250dccb09e63b79fe17a1ba053f82fd4e6 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:28:23 -0700
 Subject: [PATCH] XFA: Let scripts move the focus to a field
@@ -149,7 +149,7 @@ index df2f68d..42c8fe5 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 9816efb..50d0f32 100644
+index 2794367..6021c38 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -1615,6 +1615,15 @@ void XFAForm::hostPrint(int firstPage, int lastPage)
@@ -169,7 +169,7 @@ index 9816efb..50d0f32 100644
  {
      return std::exchange(requests, {});
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index 196cc78..7349669 100644
+index afe98c8..1e66508 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -30,18 +30,20 @@ class XFAScript;
@@ -205,7 +205,7 @@ index 196cc78..7349669 100644
      void logMessage(const std::string &msg);
  
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 5d9ccab..485ab43 100644
+index cd32cc0..0bbadae 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -425,7 +425,16 @@ var xfa = {
@@ -250,7 +250,7 @@ index 5d9ccab..485ab43 100644
  int interruptHandler(JSContext *, void *opaque)
  {
 diff --git a/utils/pdfxfa.cc b/utils/pdfxfa.cc
-index 21b2783..5b44896 100644
+index a133793..38f246d 100644
 --- a/utils/pdfxfa.cc
 +++ b/utils/pdfxfa.cc
 @@ -148,6 +148,9 @@ int main(int argc, char *argv[])

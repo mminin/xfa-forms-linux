@@ -1,4 +1,4 @@
-From 4be3ae6161290750ecff5bbac6eb1895a1f3ca5f Mon Sep 17 00:00:00 2001
+From f05fe435c31eb559e6c45a33e4853c9b7b2c4e41 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:11:16 -0700
 Subject: [PATCH] libview: Commit editable choices on focus-out and activation

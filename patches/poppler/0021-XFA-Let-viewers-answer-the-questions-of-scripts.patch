@@ -1,4 +1,4 @@
-From cb059ee1fc7a4e5f9ddaa4cb8e35cd5ab14030c0 Mon Sep 17 00:00:00 2001
+From 7f1a4025c47c8379c1c36114ad546c4fcb87659c Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:33:30 -0700
 Subject: [PATCH] XFA: Let viewers answer the questions of scripts
@@ -286,7 +286,7 @@ index 42c8fe5..c0ad4c7 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 50d0f32..9452981 100644
+index 6021c38..d248d0c 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -1605,6 +1605,23 @@ void XFAForm::hostMessage(const std::string &title, const std::string &text)
@@ -314,7 +314,7 @@ index 50d0f32..9452981 100644
  {
      requests.push_back({ XFAHostRequest::Type::LaunchURL, {}, url });
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index 7349669..3cfc40e 100644
+index 1e66508..8b18c0e 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -205,8 +205,24 @@ public:
@@ -351,7 +351,7 @@ index 7349669..3cfc40e 100644
  
  // Locale independent number parsing: "1.5" whatever LC_NUMERIC says.
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 485ab43..30c4517 100644
+index 0bbadae..883c945 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -421,10 +421,12 @@ var xfa = {

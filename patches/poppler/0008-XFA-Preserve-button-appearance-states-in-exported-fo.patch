@@ -1,4 +1,4 @@
-From ffa52b3ef552a794220af0b1ebb5438b3b7fe52d Mon Sep 17 00:00:00 2001
+From dcbaf20ed3ef16912df020dd1a5f0db1b95b1e70 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:26:54 -0700
 Subject: [PATCH] XFA: Preserve button appearance states in exported forms
@@ -151,7 +151,7 @@ index 110f51c..45b81a0 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index 4046d88..ddbb973 100644
+index 463071f..a091046 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -1049,7 +1049,11 @@ std::string Writer::write(const XFALayoutResult &layout)

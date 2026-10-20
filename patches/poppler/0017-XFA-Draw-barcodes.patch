@@ -1,4 +1,4 @@
-From 1356b300a2d3623c53b3b490b3350e06c6a52d77 Mon Sep 17 00:00:00 2001
+From 4c59522c85b8485e23572b2f463931c7fa25399e Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:08:52 -0700
 Subject: [PATCH] XFA: Draw barcodes
@@ -181,7 +181,7 @@ index 9230ac8..086302a 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index a3032fb..08beb2e 100644
+index 7c694d2..164e08e 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -15,10 +15,15 @@

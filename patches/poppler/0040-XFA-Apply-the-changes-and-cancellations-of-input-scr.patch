@@ -1,4 +1,4 @@
-From 749873cbc864293f5808ce78ffca97571688aa38 Mon Sep 17 00:00:00 2001
+From 7ceeb82091de03fa453510911d7eef32e1b1a44f Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:11:32 -0700
 Subject: [PATCH] XFA: Apply the changes and cancellations of input scripts
@@ -19,7 +19,7 @@ Co-authored-by: Codex <noreply@openai.com>
  4 files changed, 64 insertions(+), 11 deletions(-)
 
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 119219e..b1cb56f 100644
+index ae4cd23..b2ce3e6 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -2302,12 +2302,15 @@ bool XFAForm::setFieldText(const std::string &fieldName, const std::string &valu
@@ -52,7 +52,7 @@ index 119219e..b1cb56f 100644
      }
      if ((field = formDom.lookup(serial))) {
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index ee8723a..fedcc68 100644
+index 2777a42..09d0f42 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -196,6 +196,9 @@ public:
@@ -66,7 +66,7 @@ index ee8723a..fedcc68 100644
      void fireEvent(XFANode *node, const std::string &activity, EventContext *ctx = nullptr);
      void fireEventRecursive(XFANode *node, const std::string &activity);
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 1bcdd61..91f909b 100644
+index bbe98aa..7e5a10d 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -458,11 +458,29 @@ function eventTarget(id) {
@@ -178,7 +178,7 @@ index 1bcdd61..91f909b 100644
      return {};
  }
 diff --git a/poppler/XFAScript.h b/poppler/XFAScript.h
-index 886575e..6310d93 100644
+index da2a31d..f04235e 100644
 --- a/poppler/XFAScript.h
 +++ b/poppler/XFAScript.h
 @@ -39,7 +39,7 @@ public:

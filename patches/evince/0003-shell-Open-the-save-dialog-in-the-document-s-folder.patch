@@ -1,4 +1,4 @@
-From 2b6a79a119940ff2a51ede819f6577fdbe9fc021 Mon Sep 17 00:00:00 2001
+From bf449961a9c83aff48522c6a6be31fc1c2675b32 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:43:24 -0700
 Subject: [PATCH] shell: Open the save dialog in the document's folder

@@ -1,4 +1,4 @@
-From 199b4d86e9f0565bce9249fa337171cbdd7870ef Mon Sep 17 00:00:00 2001
+From cbf2274f4b7107900136ed3f2d6ad029a88ae38a Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:50:34 -0700
 Subject: [PATCH] XFA: Add the data DOM
@@ -106,7 +106,7 @@ index 91192a7..790c0e7 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index f2b2918..6cd763f 100644
+index 6c38ee0..810ffa6 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -248,7 +248,7 @@ void collectNamed(const XFANode *node, const std::string &name, std::vector<XFAN
@@ -434,7 +434,7 @@ index f2b2918..6cd763f 100644
  
  std::string XFAForm::generateSavedPDF()
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index dc19db5..e31dc99 100644
+index 644f871..d2a4864 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -99,6 +99,15 @@ public:
@@ -485,7 +485,7 @@ index dc19db5..e31dc99 100644
 +
  #endif
 diff --git a/poppler/XFANode.h b/poppler/XFANode.h
-index 0190e65..d2c8ac1 100644
+index 77873ce..1de3a7d 100644
 --- a/poppler/XFANode.h
 +++ b/poppler/XFANode.h
 @@ -49,7 +49,9 @@ public:
@@ -500,7 +500,7 @@ index 0190e65..d2c8ac1 100644
  
      XFANode(XFADom *dom, std::string className);
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 05fb70b..3d10291 100644
+index 96fc0f6..f18f994 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -4,7 +4,8 @@

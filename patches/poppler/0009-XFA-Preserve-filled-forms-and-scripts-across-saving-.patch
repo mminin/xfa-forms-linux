@@ -1,4 +1,4 @@
-From 11ca9a908d07441c40dc4f0dd5ed69905697ea4a Mon Sep 17 00:00:00 2001
+From f2774954b1298afb1252b5511d9c4c1c8dc83c60 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:53:17 -0700
 Subject: [PATCH] XFA: Preserve filled forms and scripts across saving and
@@ -195,7 +195,7 @@ index 45b81a0..339d02a 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 103efb4..1f62216 100644
+index 49b2c8e..986da96 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -21,6 +21,7 @@
@@ -350,7 +350,7 @@ index 103efb4..1f62216 100644
 +    return setValueBySOM(somExpression(node), value);
 +}
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index d38562a..8011e0e 100644
+index e31a519..0244be2 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -60,6 +60,10 @@ public:
@@ -381,7 +381,7 @@ index d38562a..8011e0e 100644
      unsigned int changeCount = 0;
      int calcDepth = 0;
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index ddbb973..04c350a 100644
+index a091046..d60d7fe 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -491,7 +491,7 @@ Edge edgeOf(const XFANode *e)
@@ -428,7 +428,7 @@ index ddbb973..04c350a 100644
      return writer.write(layout);
  }
 diff --git a/poppler/XFAWriter.h b/poppler/XFAWriter.h
-index 69eca67..89545d0 100644
+index 9770e01..99f7395 100644
 --- a/poppler/XFAWriter.h
 +++ b/poppler/XFAWriter.h
 @@ -20,6 +20,6 @@
@@ -440,7 +440,7 @@ index 69eca67..89545d0 100644
  
  #endif
 diff --git a/utils/pdfxfa.cc b/utils/pdfxfa.cc
-index a96ef32..21b2783 100644
+index 594dfb9..a133793 100644
 --- a/utils/pdfxfa.cc
 +++ b/utils/pdfxfa.cc
 @@ -36,6 +36,8 @@ static void usage()

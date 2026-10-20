@@ -1,4 +1,4 @@
-From b8b75d16128066f78cbec82bb58d40e4ef290e4a Mon Sep 17 00:00:00 2001
+From cf2c8144abd612fd1a2c62e8fa54c46b9b3e2ee2 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:41:00 -0700
 Subject: [PATCH] libview: Pop up choice fields once they are on screen

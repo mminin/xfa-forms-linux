@@ -1,4 +1,4 @@
-From eb5898fbba3f08a8f53cb0b74e3ae49c66ee058c Mon Sep 17 00:00:00 2001
+From 5b1f39b6d7030f7954f26ed4b84bcd2bc3c7185f Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 11:31:27 -0700
 Subject: [PATCH] libview: Confirm script-requested URLs like Reader's Trust

@@ -1,4 +1,4 @@
-From e21408f43ead24cac9fad70f5cc9b0606f59f7e9 Mon Sep 17 00:00:00 2001
+From ffbfd083783dc584135d51274e06341885757469 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 13:53:39 -0700
 Subject: [PATCH] glib: Add test for form type and NeedsRendering

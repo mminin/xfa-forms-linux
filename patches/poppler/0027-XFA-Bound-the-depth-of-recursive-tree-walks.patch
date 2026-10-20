@@ -1,4 +1,4 @@
-From 1419ef8e92e029b500b491d5ba1a4825654f97dd Mon Sep 17 00:00:00 2001
+From 4bff8669f01384d3ecf823a92fa1d0386632de2f Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 10:55:30 -0700
 Subject: [PATCH] XFA: Bound the depth of recursive tree walks
@@ -86,7 +86,7 @@ index fd5ffc5..e4700fd 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 42739b1..9bc1cfb 100644
+index ed546a0..7477614 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -244,8 +244,11 @@ bool isTransparent(const XFANode *n)
@@ -219,7 +219,7 @@ index 42739b1..9bc1cfb 100644
      }
  }
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index 3cfc40e..3e83929 100644
+index 8b18c0e..b46542a 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -247,7 +247,7 @@ private:
@@ -232,7 +232,7 @@ index 3cfc40e..3e83929 100644
      void fireEnterEvents(XFANode *node);
      void doRemerge();
 diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
-index 55a2946..30a6ada 100644
+index 0302127..2671f46 100644
 --- a/poppler/XFALayout.cc
 +++ b/poppler/XFALayout.cc
 @@ -260,10 +260,13 @@ private:
@@ -295,7 +295,7 @@ index 55a2946..30a6ada 100644
  }
  
 diff --git a/poppler/XFANode.cc b/poppler/XFANode.cc
-index 08caf75..7ef8451 100644
+index fe13349..2ecebb2 100644
 --- a/poppler/XFANode.cc
 +++ b/poppler/XFANode.cc
 @@ -193,15 +193,17 @@ bool XFANode::isContainer() const
@@ -347,7 +347,7 @@ index 08caf75..7ef8451 100644
      return res + "</" + className + ">";
  }
 diff --git a/poppler/XFANode.h b/poppler/XFANode.h
-index d2c8ac1..35cdff0 100644
+index 1de3a7d..8fd5bd8 100644
 --- a/poppler/XFANode.h
 +++ b/poppler/XFANode.h
 @@ -40,6 +40,14 @@ private:

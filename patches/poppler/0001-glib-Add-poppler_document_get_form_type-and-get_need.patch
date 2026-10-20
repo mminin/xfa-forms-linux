@@ -1,4 +1,4 @@
-From 567281834ea050349b82d957bdf07f6dbf6d142b Mon Sep 17 00:00:00 2001
+From ed26166c92d9d5b09f8d6e8ad6041b60af5590b3 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 13:53:39 -0700
 Subject: [PATCH] glib: Add poppler_document_get_form_type() and

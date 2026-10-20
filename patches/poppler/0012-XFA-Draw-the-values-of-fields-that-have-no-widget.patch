@@ -1,4 +1,4 @@
-From 4eb4db77f239c46d31760ceeb3ff37d373754411 Mon Sep 17 00:00:00 2001
+From d18fd2afe1e19498e390fc95637550aafd258db2 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:33:19 -0700
 Subject: [PATCH] XFA: Draw the values of fields that have no widget
@@ -69,7 +69,7 @@ index 3cbb5bf..f6cb2a4 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index aa0e39c..a3032fb 100644
+index e722a44..7c694d2 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -291,6 +291,7 @@ private:

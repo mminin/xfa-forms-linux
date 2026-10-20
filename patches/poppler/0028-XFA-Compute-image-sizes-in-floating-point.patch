@@ -1,4 +1,4 @@
-From fdb655c0dc9d7c1fe7f1391d28b98da1c7c1a90d Mon Sep 17 00:00:00 2001
+From 159ac2156abe12eb21551aeb91a7f06b3ed731e1 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 12:16:48 -0700
 Subject: [PATCH] XFA: Compute image sizes in floating point
@@ -13,7 +13,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index 127dde6..53d1af8 100644
+index 40c098d..6f7c797 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -471,7 +471,7 @@ void Writer::drawImage(const XFANode *imageNode, double x, double y, double w, d

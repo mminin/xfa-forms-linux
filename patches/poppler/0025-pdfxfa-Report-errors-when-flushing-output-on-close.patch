@@ -1,4 +1,4 @@
-From ea98d0940b78c227608c5e2c7b2b1916271422c3 Mon Sep 17 00:00:00 2001
+From 43265d2bf6a757a0b9eee926b47f661beba64f91 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 17:35:29 -0700
 Subject: [PATCH] pdfxfa: Report errors when flushing output on close
@@ -12,7 +12,7 @@ Co-authored-by: Codex <noreply@openai.com>
  1 file changed, 8 insertions(+), 2 deletions(-)
 
 diff --git a/utils/pdfxfa.cc b/utils/pdfxfa.cc
-index 5b44896..7ab63e9 100644
+index 38f246d..6a9988e 100644
 --- a/utils/pdfxfa.cc
 +++ b/utils/pdfxfa.cc
 @@ -159,7 +159,13 @@ int main(int argc, char *argv[])

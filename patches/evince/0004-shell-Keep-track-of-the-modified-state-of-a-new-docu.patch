@@ -1,4 +1,4 @@
-From eb67bdd005c4680ca8a1051160cb25c503df151e Mon Sep 17 00:00:00 2001
+From 8385c74389291f8499fc6a3b8b0d1b0d3aed8b57 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:51:12 -0700
 Subject: [PATCH] shell: Keep track of the modified state of a new document

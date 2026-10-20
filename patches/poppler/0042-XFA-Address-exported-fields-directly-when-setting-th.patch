@@ -1,4 +1,4 @@
-From 0794f087e19852ce3a7340fd0b73b3380aaae106 Mon Sep 17 00:00:00 2001
+From 77e924484ad8076dc443b9afa5c658a36c50a8c5 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:11:32 -0700
 Subject: [PATCH] XFA: Address exported fields directly when setting their
@@ -15,7 +15,7 @@ Co-authored-by: Codex <noreply@openai.com>
  1 file changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 1703985..8a7fced 100644
+index 37f90ba..2dd6fca 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -2494,5 +2494,16 @@ bool XFAForm::setValueByFieldName(const std::string &name, const std::string &va

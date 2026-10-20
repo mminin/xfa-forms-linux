@@ -1,4 +1,4 @@
-From 2b4b7dd177db04ee15a5319a725cd6b0ce52ab84 Mon Sep 17 00:00:00 2001
+From 7f821af1af54639c6a887771cc2290835653fd79 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:02:51 -0700
 Subject: [PATCH] libview: Keep editing a form field when the form re-renders

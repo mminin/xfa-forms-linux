@@ -1,4 +1,4 @@
-From 641d8d8e1263fcb7840ec62300b2f6b83aefc6a3 Mon Sep 17 00:00:00 2001
+From d274e1046c12457452dcc212cd8941cca17d880e Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 14:57:48 -0700
 Subject: [PATCH] Add an engine for dynamic XFA forms
@@ -129,7 +129,7 @@ index d624cda..e8e0ef6 100644
  
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
 new file mode 100644
-index 0000000..76a2f29
+index 0000000..366bdac
 --- /dev/null
 +++ b/poppler/XFAForm.cc
 @@ -0,0 +1,1640 @@
@@ -1775,7 +1775,7 @@ index 0000000..76a2f29
 +}
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
 new file mode 100644
-index 0000000..bef575f
+index 0000000..464e05c
 --- /dev/null
 +++ b/poppler/XFAForm.h
 @@ -0,0 +1,234 @@
@@ -2015,7 +2015,7 @@ index 0000000..bef575f
 +#endif
 diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
 new file mode 100644
-index 0000000..caa5e30
+index 0000000..d684864
 --- /dev/null
 +++ b/poppler/XFALayout.cc
 @@ -0,0 +1,856 @@
@@ -2877,7 +2877,7 @@ index 0000000..caa5e30
 +}
 diff --git a/poppler/XFALayout.h b/poppler/XFALayout.h
 new file mode 100644
-index 0000000..fadfc90
+index 0000000..54e6a95
 --- /dev/null
 +++ b/poppler/XFALayout.h
 @@ -0,0 +1,69 @@
@@ -2952,7 +2952,7 @@ index 0000000..fadfc90
 +#endif
 diff --git a/poppler/XFANode.cc b/poppler/XFANode.cc
 new file mode 100644
-index 0000000..70c879b
+index 0000000..fd86c24
 --- /dev/null
 +++ b/poppler/XFANode.cc
 @@ -0,0 +1,592 @@
@@ -3550,7 +3550,7 @@ index 0000000..70c879b
 +}
 diff --git a/poppler/XFANode.h b/poppler/XFANode.h
 new file mode 100644
-index 0000000..0190e65
+index 0000000..77873ce
 --- /dev/null
 +++ b/poppler/XFANode.h
 @@ -0,0 +1,131 @@
@@ -3687,7 +3687,7 @@ index 0000000..0190e65
 +#endif
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
 new file mode 100644
-index 0000000..eba52d3
+index 0000000..39db955
 --- /dev/null
 +++ b/poppler/XFAScript.cc
 @@ -0,0 +1,1116 @@
@@ -4809,7 +4809,7 @@ index 0000000..eba52d3
 +#endif
 diff --git a/poppler/XFAScript.h b/poppler/XFAScript.h
 new file mode 100644
-index 0000000..886575e
+index 0000000..da2a31d
 --- /dev/null
 +++ b/poppler/XFAScript.h
 @@ -0,0 +1,50 @@
@@ -4865,7 +4865,7 @@ index 0000000..886575e
 +#endif
 diff --git a/poppler/XFAText.cc b/poppler/XFAText.cc
 new file mode 100644
-index 0000000..24fe9c2
+index 0000000..091521b
 --- /dev/null
 +++ b/poppler/XFAText.cc
 @@ -0,0 +1,814 @@
@@ -5685,7 +5685,7 @@ index 0000000..24fe9c2
 +}
 diff --git a/poppler/XFAText.h b/poppler/XFAText.h
 new file mode 100644
-index 0000000..8b7a04c
+index 0000000..f6d81aa
 --- /dev/null
 +++ b/poppler/XFAText.h
 @@ -0,0 +1,119 @@
@@ -5810,7 +5810,7 @@ index 0000000..8b7a04c
 +#endif
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
 new file mode 100644
-index 0000000..2d30852
+index 0000000..09fde76
 --- /dev/null
 +++ b/poppler/XFAWriter.cc
 @@ -0,0 +1,1043 @@
@@ -6859,7 +6859,7 @@ index 0000000..2d30852
 +}
 diff --git a/poppler/XFAWriter.h b/poppler/XFAWriter.h
 new file mode 100644
-index 0000000..69eca67
+index 0000000..9770e01
 --- /dev/null
 +++ b/poppler/XFAWriter.h
 @@ -0,0 +1,25 @@
@@ -6909,7 +6909,7 @@ index c60a016..e92c815 100644
    pdfinfo.cc printencodings.cc
 diff --git a/utils/pdfxfa.cc b/utils/pdfxfa.cc
 new file mode 100644
-index 0000000..a96ef32
+index 0000000..594dfb9
 --- /dev/null
 +++ b/utils/pdfxfa.cc
 @@ -0,0 +1,155 @@

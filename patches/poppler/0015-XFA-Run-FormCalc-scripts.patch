@@ -1,4 +1,4 @@
-From e65b30f6a0115aa7a51531fef62d91bcbbf52958 Mon Sep 17 00:00:00 2001
+From ed881b956214f84bfc9465f24049d8262dc74a6c Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:59:23 -0700
 Subject: [PATCH] XFA: Run FormCalc scripts
@@ -108,7 +108,7 @@ index 790c0e7..9230ac8 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 6cd763f..f6fb317 100644
+index 810ffa6..9f7d237 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -16,6 +16,7 @@
@@ -170,7 +170,7 @@ index 6cd763f..f6fb317 100644
  // Loading
  //------------------------------------------------------------------------
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index e31dc99..080b839 100644
+index d2a4864..4e47e12 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -19,6 +19,7 @@
@@ -199,7 +199,7 @@ index e31dc99..080b839 100644
  // Locale independent number parsing: "1.5" whatever LC_NUMERIC says.
 diff --git a/poppler/XFAFormCalc.cc b/poppler/XFAFormCalc.cc
 new file mode 100644
-index 0000000..61be917
+index 0000000..7157067
 --- /dev/null
 +++ b/poppler/XFAFormCalc.cc
 @@ -0,0 +1,692 @@
@@ -897,7 +897,7 @@ index 0000000..61be917
 +}
 diff --git a/poppler/XFAFormCalc.h b/poppler/XFAFormCalc.h
 new file mode 100644
-index 0000000..dc4a504
+index 0000000..7dc8d80
 --- /dev/null
 +++ b/poppler/XFAFormCalc.h
 @@ -0,0 +1,25 @@
@@ -927,7 +927,7 @@ index 0000000..dc4a504
 +
 +#endif
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 3d10291..2b6e7ed 100644
+index f18f994..aa11e19 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -461,6 +461,303 @@ var util = {

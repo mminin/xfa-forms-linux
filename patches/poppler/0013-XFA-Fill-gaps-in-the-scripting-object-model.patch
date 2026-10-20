@@ -1,4 +1,4 @@
-From 7b656ca3c69bcc54838699aa883e30b2dfe28b0e Mon Sep 17 00:00:00 2001
+From 9a23249ccaa64b5412f277f25da2fed5cdf46b2d Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:42:00 -0700
 Subject: [PATCH] XFA: Fill gaps in the scripting object model
@@ -101,7 +101,7 @@ index f6cb2a4..91192a7 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 1f62216..f2b2918 100644
+index 986da96..6c38ee0 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -208,6 +208,9 @@ std::vector<SomStep> parseSom(const std::string &som)
@@ -224,7 +224,7 @@ index 1f62216..f2b2918 100644
  {
      const std::vector<XFANode *> lists = field->childrenOfClass("items");
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index 8011e0e..dc19db5 100644
+index 0244be2..644f871 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -126,6 +126,7 @@ public:
@@ -248,7 +248,7 @@ index 8011e0e..dc19db5 100644
      // Node presence, taking "hidden" ancestors into account when deep.
      std::string getPresence(const XFANode *node) const;
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index eba52d3..05fb70b 100644
+index 39db955..96fc0f6 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -34,6 +34,37 @@ var cache = new Map();

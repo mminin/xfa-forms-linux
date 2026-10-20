@@ -1,4 +1,4 @@
-From 07fb7d915c78f7511da03b81d80dcdb6f745bc6f Mon Sep 17 00:00:00 2001
+From 709a89f578f1a6ace1b91b03c3178e547a1bd6bc Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:11:32 -0700
 Subject: [PATCH] XFA: Embed fallback fonts in text and choice appearances
@@ -19,7 +19,7 @@ Co-authored-by: Codex <noreply@openai.com>
  4 files changed, 62 insertions(+), 1 deletion(-)
 
 diff --git a/poppler/XFAFonts.h b/poppler/XFAFonts.h
-index cb584c9..6a32130 100644
+index 812df87..b538d44 100644
 --- a/poppler/XFAFonts.h
 +++ b/poppler/XFAFonts.h
 @@ -26,6 +26,9 @@ struct XFAFallbackFace;
@@ -33,7 +33,7 @@ index cb584c9..6a32130 100644
  // XFAStandardFontName()), or nullptr when no system font has it.
  const XFAFallbackFace *XFAFallbackFaceFor(unsigned int cp, int standardFont);
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index b1cb56f..1703985 100644
+index b2ce3e6..37f90ba 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -17,6 +17,7 @@
@@ -57,7 +57,7 @@ index b1cb56f..1703985 100644
      }
      ++changeCount;
 diff --git a/poppler/XFAText.cc b/poppler/XFAText.cc
-index d90eacf..51fc73a 100644
+index c8d886e..efb407f 100644
 --- a/poppler/XFAText.cc
 +++ b/poppler/XFAText.cc
 @@ -208,6 +208,17 @@ double XFAFont::width(const std::string &utf8) const
@@ -79,7 +79,7 @@ index d90eacf..51fc73a 100644
  {
      return cp < 0x20 || cp == 0x7F || cp == '?' || cp == 0xFFFD || winAnsiCode(cp) != '?';
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index ed08782..0542ca5 100644
+index db4ea5b..366710f 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -305,6 +305,7 @@ private:

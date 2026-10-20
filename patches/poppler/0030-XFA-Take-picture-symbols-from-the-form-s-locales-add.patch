@@ -1,4 +1,4 @@
-From a2a1318053d519557b8b0180a723bbd6be4c298c Mon Sep 17 00:00:00 2001
+From 2223db46eee23cd6f09207f653df8dd46bf362e8 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 12:59:25 -0700
 Subject: [PATCH] XFA: Take picture symbols from the form's locales; add time
@@ -93,7 +93,7 @@ index e4700fd..2a316b5 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 9bc1cfb..2c21e46 100644
+index 7477614..c107220 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -396,6 +396,7 @@ std::string XFAForm::scriptSource(const XFANode *s, bool *runnable)
@@ -257,7 +257,7 @@ index 9bc1cfb..2c21e46 100644
          } else if (const XFANode *s = scriptOf(validate)) {
              bool runnable;
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index 3e83929..a8b39c6 100644
+index b46542a..b65c71e 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -16,6 +16,7 @@
@@ -286,7 +286,7 @@ index 3e83929..a8b39c6 100644
      VisibleState shownState; // of the PDF the viewer shows
      unsigned int changeCount = 0;
 diff --git a/poppler/XFAPicture.cc b/poppler/XFAPicture.cc
-index 2d4f27a..094ecbc 100644
+index d4a21df..cd6a2e6 100644
 --- a/poppler/XFAPicture.cc
 +++ b/poppler/XFAPicture.cc
 @@ -2,8 +2,9 @@
@@ -1386,7 +1386,7 @@ index 2d4f27a..094ecbc 100644
 +    return apply(picture, text, locale, locales, false);
  }
 diff --git a/poppler/XFAPicture.h b/poppler/XFAPicture.h
-index d8f6ba5..79ad6f7 100644
+index cf91606..fe0d485 100644
 --- a/poppler/XFAPicture.h
 +++ b/poppler/XFAPicture.h
 @@ -15,18 +15,53 @@

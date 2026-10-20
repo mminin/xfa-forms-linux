@@ -1,4 +1,4 @@
-From efbbf783a405137a4b180116b0f1e984fd318f53 Mon Sep 17 00:00:00 2001
+From 83a9f3de019bbf1e8283f98b1a3c884b9bb5e251 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 15:29:48 -0700
 Subject: [PATCH] XFA: Show characters the standard fonts lack with system
@@ -100,7 +100,7 @@ index 9dda6f9..c1b5982 100644
  }
 diff --git a/poppler/XFAFonts.cc b/poppler/XFAFonts.cc
 new file mode 100644
-index 0000000..621b302
+index 0000000..7c46aca
 --- /dev/null
 +++ b/poppler/XFAFonts.cc
 @@ -0,0 +1,440 @@
@@ -546,7 +546,7 @@ index 0000000..621b302
 +}
 diff --git a/poppler/XFAFonts.h b/poppler/XFAFonts.h
 new file mode 100644
-index 0000000..cb584c9
+index 0000000..812df87
 --- /dev/null
 +++ b/poppler/XFAFonts.h
 @@ -0,0 +1,52 @@
@@ -603,7 +603,7 @@ index 0000000..cb584c9
 +
 +#endif
 diff --git a/poppler/XFAText.cc b/poppler/XFAText.cc
-index c31eb65..d90eacf 100644
+index a115ba7..c8d886e 100644
 --- a/poppler/XFAText.cc
 +++ b/poppler/XFAText.cc
 @@ -13,6 +13,7 @@
@@ -660,7 +660,7 @@ index c31eb65..d90eacf 100644
  {
      return builtinFonts[index].name.c_str();
 diff --git a/poppler/XFAText.h b/poppler/XFAText.h
-index 8b7a04c..e2b6b39 100644
+index f6d81aa..97cbfbe 100644
 --- a/poppler/XFAText.h
 +++ b/poppler/XFAText.h
 @@ -46,6 +46,8 @@ struct XFAFont
@@ -673,7 +673,7 @@ index 8b7a04c..e2b6b39 100644
  struct XFAPara
  {
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index a5fa328..95955f9 100644
+index 970031c..249f95e 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -12,6 +12,7 @@

@@ -1,4 +1,4 @@
-From bdbf5d64ee81c865420810727e98d4ec3d9548b6 Mon Sep 17 00:00:00 2001
+From 7a0e5fc77b2364a9cc8a5762e58a7d0753e4e47a Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 17:38:40 -0700
 Subject: [PATCH] libview: Commit form editors outside GTK focus transitions

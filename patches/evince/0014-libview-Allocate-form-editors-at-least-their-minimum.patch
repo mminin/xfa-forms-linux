@@ -1,4 +1,4 @@
-From 6ed5ce304b625d59b0a75dd1ce4a108c594b36a2 Mon Sep 17 00:00:00 2001
+From 69d182e4f72fd761424604ce71c28aa654c4dc3c Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 12:20:15 -0700
 Subject: [PATCH] libview: Allocate form editors at least their minimum size

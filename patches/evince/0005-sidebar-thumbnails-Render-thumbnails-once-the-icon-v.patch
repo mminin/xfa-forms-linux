@@ -1,4 +1,4 @@
-From 013c336b3c7e4552f0951150f2db859961e2f79f Mon Sep 17 00:00:00 2001
+From 394e635bf8dc53cbef68ab33f413828cdfd6e99d Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 15:56:15 -0700
 Subject: [PATCH] sidebar-thumbnails: Render thumbnails once the icon view is

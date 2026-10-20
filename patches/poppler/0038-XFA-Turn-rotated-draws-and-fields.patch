@@ -1,4 +1,4 @@
-From 155b6744d2ba0b65b07bf3cdf0a6dca597033fc8 Mon Sep 17 00:00:00 2001
+From 0a5d9e57b2b89c855419b02a7998d9adc6f49fb4 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 16:06:02 -0700
 Subject: [PATCH] XFA: Turn rotated draws and fields
@@ -24,7 +24,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  3 files changed, 156 insertions(+), 12 deletions(-)
 
 diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
-index 30a6ada..7bd8f6c 100644
+index 2671f46..569c8d5 100644
 --- a/poppler/XFALayout.cc
 +++ b/poppler/XFALayout.cc
 @@ -15,6 +15,8 @@
@@ -163,7 +163,7 @@ index 30a6ada..7bd8f6c 100644
      result.pageOfNode.emplace(b.node->getSerial(), pageIndex);
      for (const Box &c : b.children) {
 diff --git a/poppler/XFALayout.h b/poppler/XFALayout.h
-index fadfc90..682c91e 100644
+index 54e6a95..e2c076a 100644
 --- a/poppler/XFALayout.h
 +++ b/poppler/XFALayout.h
 @@ -32,6 +32,10 @@ struct XFALayoutItem
@@ -189,7 +189,7 @@ index fadfc90..682c91e 100644
  {
      // Rectangles relative to the field's top left corner: x, y, w, h.
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index 95955f9..8e851a5 100644
+index 249f95e..29dbfa0 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -306,6 +306,7 @@ private:

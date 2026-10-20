@@ -1,4 +1,4 @@
-From 8a6695bcb6ec5c0eae86e6961bea020cb3bacb43 Mon Sep 17 00:00:00 2001
+From 78df83646c53ff5bb8ff52e3401c2930e0db64b6 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 16:06:08 -0700
 Subject: [PATCH] libview: Give the view's scroll controller its axes

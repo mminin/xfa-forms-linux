@@ -1,4 +1,4 @@
-From e6c9fc0ea4203c0a6b4da6b59ce4b1f0a7e5d079 Mon Sep 17 00:00:00 2001
+From 873c67b9e2b81c625c50098a22fbfc138e14a585 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 17:35:27 -0700
 Subject: [PATCH] XFA: Reject corrupt state and handle deeply nested or
@@ -127,7 +127,7 @@ index 701c8fe..fd5ffc5 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 9db85ab..42739b1 100644
+index 45f359b..ed546a0 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -505,6 +505,10 @@ bool XFAForm::build(PDFDoc *doc, std::string *error)
@@ -153,7 +153,7 @@ index 9db85ab..42739b1 100644
      if (comb || (maxChars > 0 && static_cast<long>(formatted.size()) > maxChars)) {
          return raw;
 diff --git a/poppler/XFANode.cc b/poppler/XFANode.cc
-index 70c879b..08caf75 100644
+index fd86c24..fe13349 100644
 --- a/poppler/XFANode.cc
 +++ b/poppler/XFANode.cc
 @@ -392,6 +392,12 @@ std::string XMLParser::resolve(const std::string &prefix) const
@@ -170,7 +170,7 @@ index 70c879b..08caf75 100644
      const std::string qname = parseName();
      if (qname.empty()) {
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index 2607aa3..127dde6 100644
+index 4b3f99c..40c098d 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -690,7 +690,8 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub

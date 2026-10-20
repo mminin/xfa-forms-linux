@@ -1,4 +1,4 @@
-From 89e80a5b8550cd2b32176bba47ad58af05e36c94 Mon Sep 17 00:00:00 2001
+From 644311a9d34f1e76d2eb8824f4b16c8d469b554d Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 15:21:23 -0700
 Subject: [PATCH] XFA: Bind fields to data nodes as Acrobat does
@@ -102,7 +102,7 @@ index 5c0b891..9dda6f9 100644
      return g_test_run();
  }
 diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
-index 44f0dba..119219e 100644
+index b9b0a30..ae4cd23 100644
 --- a/poppler/XFAForm.cc
 +++ b/poppler/XFAForm.cc
 @@ -400,6 +400,7 @@ std::string XFAForm::scriptSource(const XFANode *s, bool *runnable)
@@ -354,7 +354,7 @@ index 44f0dba..119219e 100644
      for (const auto &c : node->getChildren()) {
          if (c->isText() || !c->isContainer() || c->getClassName() == "draw" || !bindsData(c.get())) {
 diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
-index a8b39c6..ee8723a 100644
+index b65c71e..2777a42 100644
 --- a/poppler/XFAForm.h
 +++ b/poppler/XFAForm.h
 @@ -137,6 +137,9 @@ public:
@@ -390,7 +390,7 @@ index a8b39c6..ee8723a 100644
      HostDialogs dialogs;
  };
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 090de4a..1bcdd61 100644
+index 0d0ad25..bbe98aa 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -188,6 +188,24 @@ var methods = {

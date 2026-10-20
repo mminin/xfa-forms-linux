@@ -1,4 +1,4 @@
-From 5adc192f9d4abc3be324642a32fc608f0601799f Mon Sep 17 00:00:00 2001
+From 45ce208ddfa2e4ecd30f41e157aafe06c0dc1e69 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 15:21:35 -0700
 Subject: [PATCH] XFA: Use embedded copies of linked images; report linked
@@ -17,7 +17,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 8 insertions(+), 4 deletions(-)
 
 diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
-index 53d1af8..a5fa328 100644
+index 6f7c797..970031c 100644
 --- a/poppler/XFAWriter.cc
 +++ b/poppler/XFAWriter.cc
 @@ -173,10 +173,12 @@ std::string base64Decode(const std::string &in)

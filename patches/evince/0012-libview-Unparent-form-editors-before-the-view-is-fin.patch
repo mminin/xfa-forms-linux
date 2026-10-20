@@ -1,4 +1,4 @@
-From 76b192e9936d81f621f63709d113ee068b4fbbad Mon Sep 17 00:00:00 2001
+From 3350fe8c886d2e5a1362809f904b8dee456e3f55 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 11:31:20 -0700
 Subject: [PATCH] libview: Unparent form editors before the view is finalized

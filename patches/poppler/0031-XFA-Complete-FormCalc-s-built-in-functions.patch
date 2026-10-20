@@ -1,4 +1,4 @@
-From 1105b3ec6e125d4d1165a57f8e94d4d38bacd55e Mon Sep 17 00:00:00 2001
+From ff0129bdd5147ebfac19d05b72ab32fb2f26a971 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 14:45:01 -0700
 Subject: [PATCH] XFA: Complete FormCalc's built-in functions
@@ -56,7 +56,7 @@ index 2a316b5..40804a3 100644
      g_free(text);
      g_object_unref(rendered);
 diff --git a/poppler/XFAFormCalc.cc b/poppler/XFAFormCalc.cc
-index 61be917..e64cba1 100644
+index 7157067..8972bec 100644
 --- a/poppler/XFAFormCalc.cc
 +++ b/poppler/XFAFormCalc.cc
 @@ -239,9 +239,11 @@ const std::set<std::string> &keywords()
@@ -96,7 +96,7 @@ index 61be917..e64cba1 100644
              fail("unknown function " + first.text);
              return {};
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index c965b07..9aa7af9 100644
+index c4a10f5..b3f2e1f 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -16,6 +16,7 @@

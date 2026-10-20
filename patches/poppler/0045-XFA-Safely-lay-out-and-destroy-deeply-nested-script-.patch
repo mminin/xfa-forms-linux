@@ -1,4 +1,4 @@
-From f626f20f52b21500634d9fac07c397aa770769ae Mon Sep 17 00:00:00 2001
+From 13e15172bdbceef76542ab8a2e941facb068f027 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:20:49 -0700
 Subject: [PATCH] XFA: Safely lay out and destroy deeply nested script trees
@@ -18,7 +18,7 @@ Co-authored-by: Codex <noreply@openai.com>
  3 files changed, 27 insertions(+), 4 deletions(-)
 
 diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
-index 7bd8f6c..2dea489 100644
+index 569c8d5..8f8da18 100644
 --- a/poppler/XFALayout.cc
 +++ b/poppler/XFALayout.cc
 @@ -151,6 +151,10 @@ XFAFieldGeometry XFAFieldGeometryOf(XFAForm *form, XFANode *field, double w, dou
@@ -51,7 +51,7 @@ index 7bd8f6c..2dea489 100644
      }
      if (b.fragmentRow) {
 diff --git a/poppler/XFANode.cc b/poppler/XFANode.cc
-index 7ef8451..41dab47 100644
+index 2ecebb2..a0592ba 100644
 --- a/poppler/XFANode.cc
 +++ b/poppler/XFANode.cc
 @@ -49,8 +49,22 @@ XFANode::XFANode(XFADom *domA, std::string classNameA) : dom(domA), className(st
@@ -80,7 +80,7 @@ index 7ef8451..41dab47 100644
  }
  
 diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
-index 38be891..df0593f 100644
+index 7fe11ca..287e473 100644
 --- a/poppler/XFAScript.cc
 +++ b/poppler/XFAScript.cc
 @@ -1875,6 +1875,11 @@ NATIVE(appendNode)
