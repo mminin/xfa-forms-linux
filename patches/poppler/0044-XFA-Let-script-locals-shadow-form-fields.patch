@@ -1,0 +1,48 @@
+From 7e00446029b36d7b0a9561d045f6a4fb5a4f1635 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:20:49 -0700
+Subject: [PATCH] XFA: Let script locals shadow form fields
+
+The with-scope for form lookup lived inside the function evaluating an event. It could intercept var assignments when a form field had the same name, silently overwriting the field. In the deep-tree regression it also resolved a loop variable to the newly appended node and created an ownership cycle.
+
+Create the evaluating function inside the with-scope, so its own variable environment takes precedence. Apply the same ordering to script objects.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ poppler/XFAScript.cc | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 91f909b..38be891 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -1147,7 +1147,11 @@ g.__run = function (__id, __src, __ev) {
+     xfa.event = __current;
+     running.push(__id);
+     try {
+-        return (function () { with (scopeFor(__id)) { return eval(__src); } }).call(wrap(__id));
++        // The function environment must be inside the form's with-scope:
++        // local var declarations then shadow equally named form fields.
++        with (scopeFor(__id)) {
++            return (function () { return eval(__src); }).call(wrap(__id));
++        }
+     } finally {
+         try {
+             if (__ev) {
+@@ -1229,7 +1233,9 @@ g.__defineScriptObject = function (__ownerId, __name, __body) {
+     });
+     tail += "return o;\n})({}, this)";
+     var __src = __body + tail;
+-    var obj = (function () { with (scopeFor(__ownerId)) { return eval(__src); } }).call(wrap(__ownerId));
++    var obj = (function () { with (scopeFor(__ownerId)) {
++        return (function () { return eval(__src); }).call(wrap(__ownerId));
++    } })();
+     var map = scriptObjects.get(__ownerId) || {};
+     map[__name] = obj;
+     scriptObjects.set(__ownerId, map);
+-- 
+2.43.0
+

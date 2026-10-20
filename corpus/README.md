@@ -87,7 +87,11 @@ an unsupported image.
 These are rendering and script-execution checks on blank forms. Only the consent
 letter has been verified end to end by filling, generating, printing, saving and
 reopening it, including switching its language back and forth with every section
-filled in. No script errors does not establish that a form's calculations,
+filled in. The later editing audit (`TESTING.md` in the public source export)
+additionally exercises 430 text
+and choice edits across all 129 forms, saving and reopening them under sanitizers,
+and documents the INNS3 template's year recalculation on reopening. No script
+errors does not establish that a form's calculations,
 validation, data binding or barcodes produce correct submission-ready output.
 The patched viewer continues to use ordinary PDF pages for static XFA forms;
 this check explicitly renders those forms through the engine too.

@@ -1,0 +1,41 @@
+From 0794f087e19852ce3a7340fd0b73b3380aaae106 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:11:32 -0700
+Subject: [PATCH] XFA: Address exported fields directly when setting their
+ values
+
+An exported field serial already identifies its node. Resolving its generated SOM expression again fails for an unnamed subform preceded by a named subform, as in IMM 5669. Dispatch the value directly to the text or choice setter instead.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ poppler/XFAForm.cc | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 1703985..8a7fced 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -2494,5 +2494,16 @@ bool XFAForm::setValueByFieldName(const std::string &name, const std::string &va
+         }
+         return setButtonState(name, value == "Off" ? "f" + std::to_string(button->getSerial()) : value, value != "Off");
+     }
+-    return setValueBySOM(somExpression(node), value);
++    // The exported serial already identifies the node. Round-tripping
++    // through SOM can fail for anonymous containers and is unnecessary.
++    if (uiClass(node) == "choiceList") {
++        const std::vector<std::string> saves = getItems(node, true);
++        const std::vector<std::string> displays = getItems(node, false);
++        for (size_t i = 0; i < saves.size(); ++i) {
++            if (saves[i] == value || (i < displays.size() && displays[i] == value)) {
++                return setFieldChoice(name, static_cast<int>(i));
++            }
++        }
++    }
++    return setFieldText(name, value);
+ }
+-- 
+2.43.0
+

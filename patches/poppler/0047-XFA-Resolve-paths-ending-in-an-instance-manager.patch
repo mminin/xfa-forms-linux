@@ -1,0 +1,63 @@
+From 54f5e8876cfe8cfd7be792cebaa9960bd666c32c Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:28:23 -0700
+Subject: [PATCH] XFA: Resolve paths ending in an instance manager
+
+resolveNode could resolve form nodes but not a manager path such as SectionB._Child. Layout-ready scripts in IMM 5406, IMM 5562 and IMM 5707 assigned that null result to a local instanceManager variable; the old scope bug had hidden the failure by reading the object's own manager instead.
+
+Resolve the owning node and its template child, returning the existing InstanceManager wrapper. Support qualified, relative and global lookups.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ poppler/XFAScript.cc | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index df0593f..b0ef495 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -179,10 +179,23 @@ function somResolve(id, som, inherit) {
+     return out;
+ }
+ 
++function resolveInstanceManager(id, som) {
++    var match = /^(?:(.*)\.)?_([^.[\]]+)(?:\[0\])?$/.exec(som);
++    if (!match) return null;
++    var owners = match[1] ? somResolve(id, match[1], false) : [id];
++    for (var i = 0; i < owners.length; i++) {
++        var pair = N.imFind(owners[i], match[2], !match[1]);
++        if (pair) return im(pair);
++    }
++    return null;
++}
++
+ var methods = {
+     resolveNode: function (id, som) {
+         var r = somResolve(id, String(som), false);
+         if (r.length) return wrap(r[0]);
++        var manager = resolveInstanceManager(id, String(som));
++        if (manager) return manager;
+         // A content type a value does not hold reads as empty, as in Acrobat.
+         var m = /^#(\w+)$/.exec(String(som));
+         return m && N.cls(id) === "value" && VALUE_CONTENT[m[1]] ? wrap(N.createNode(m[1], "")) : null;
+@@ -578,7 +591,13 @@ var xfa = {
+         saveXML: function () { return ""; }
+     },
+     // Unqualified expressions also resolve from the object running the script.
+-    resolveNode: function (som) { var r = resolveGlobal(String(som)); return r.length ? wrap(r[0]) : null; },
++    resolveNode: function (som) {
++        som = String(som);
++        var r = resolveGlobal(som);
++        if (r.length) return wrap(r[0]);
++        return resolveInstanceManager(N.formModel(), som) ||
++            (running.length ? resolveInstanceManager(running[running.length - 1], som) : null);
++    },
+     resolveNodes: function (som) { return staticList(resolveGlobal(String(som))); },
+     log: { message: function () {} },
+     get form() { return wrap(N.formModel()); },
+-- 
+2.43.0
+

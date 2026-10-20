@@ -1,0 +1,224 @@
+From e56c126c305cda814e5b464a3a522f77954eb18f Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:11:32 -0700
+Subject: [PATCH] glib: Synchronize form value updates with page rendering
+
+The UI can commit a text editor while a worker generates its widget appearance. Replacing FormFieldText's content then frees the string the render thread is reading; the multiline GUI regression reproduced a crash in drawMultiLineText under AddressSanitizer.
+
+Protect widget mutations and rendering with a per-document mutex. Release it before executing XFA scripts, which may enter a nested main loop for a dialog. Add a synthetic concurrent rendering and editing regression.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ glib/poppler-document.cc   |  6 +++-
+ glib/poppler-form-field.cc | 27 ++++++++++++++----
+ glib/poppler-page.cc       |  1 +
+ glib/poppler-private.h     |  3 ++
+ glib/tests/check_xfa.c     | 57 ++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 88 insertions(+), 6 deletions(-)
+
+diff --git a/glib/poppler-document.cc b/glib/poppler-document.cc
+index 42930f9..b7f5c75 100644
+--- a/glib/poppler-document.cc
++++ b/glib/poppler-document.cc
+@@ -688,6 +688,7 @@ static void poppler_document_finalize(GObject *object)
+     document->xfa.reset();
+     document->doc.reset();
+     document->initer.reset();
++    document->form_mutex.~mutex();
+ 
+     G_OBJECT_CLASS(poppler_document_parent_class)->finalize(object);
+ }
+@@ -2914,7 +2915,10 @@ static void poppler_document_class_init(PopplerDocumentClass *klass)
+     g_object_class_install_property(G_OBJECT_CLASS(klass), PROP_METADATA, g_param_spec_string("metadata", "XML Metadata", "Embedded XML metadata", nullptr, G_PARAM_READABLE));
+ }
+ 
+-static void poppler_document_init(PopplerDocument * /*document*/) { }
++static void poppler_document_init(PopplerDocument *document)
++{
++    new (&document->form_mutex) std::mutex();
++}
+ 
+ /**
+  * PopplerIndexIter:
+diff --git a/glib/poppler-form-field.cc b/glib/poppler-form-field.cc
+index 422abba..3e639c6 100644
+--- a/glib/poppler-form-field.cc
++++ b/glib/poppler-form-field.cc
+@@ -329,10 +329,14 @@ void poppler_form_field_button_set_state(PopplerFormField *field, gboolean state
+             }
+             return;
+         }
+-        button->setState(static_cast<bool>(state));
++        {
++            std::scoped_lock lock(field->document->form_mutex);
++            button->setState(static_cast<bool>(state));
++        }
+         xfa->setButtonState(name, button->getOnStr() ? button->getOnStr() : "", state);
+         return;
+     }
++    std::scoped_lock lock(field->document->form_mutex);
+     button->setState(static_cast<bool>(state));
+ }
+ 
+@@ -855,7 +859,10 @@ void poppler_form_field_text_set_text(PopplerFormField *field, const gchar *text
+     tmp = text ? g_convert(text, -1, "UTF-16BE", "UTF-8", nullptr, &length, nullptr) : nullptr;
+     std::unique_ptr<GooString> goo_tmp = std::make_unique<GooString>(tmp, length);
+     g_free(tmp);
+-    static_cast<FormWidgetText *>(field->widget)->setContent(std::move(goo_tmp));
++    {
++        std::scoped_lock lock(field->document->form_mutex);
++        static_cast<FormWidgetText *>(field->widget)->setContent(std::move(goo_tmp));
++    }
+ 
+     std::string name;
+     if (XFAForm *xfa = xfa_form_of(field, &name)) {
+@@ -1065,7 +1072,10 @@ void poppler_form_field_choice_select_item(PopplerFormField *field, gint index)
+     g_return_if_fail(field->widget->getType() == formChoice);
+     g_return_if_fail(index >= 0 && index < poppler_form_field_choice_get_n_items(field));
+ 
+-    static_cast<FormWidgetChoice *>(field->widget)->select(index);
++    {
++        std::scoped_lock lock(field->document->form_mutex);
++        static_cast<FormWidgetChoice *>(field->widget)->select(index);
++    }
+ 
+     std::string name;
+     if (XFAForm *xfa = xfa_form_of(field, &name)) {
+@@ -1085,6 +1095,7 @@ void poppler_form_field_choice_unselect_all(PopplerFormField *field)
+ 
+     // Not passed on to XFA forms: viewers unselect all before selecting
+     // the new item, and the form would see an empty value in between.
++    std::scoped_lock lock(field->document->form_mutex);
+     static_cast<FormWidgetChoice *>(field->widget)->deselectAll();
+ }
+ 
+@@ -1100,7 +1111,10 @@ void poppler_form_field_choice_toggle_item(PopplerFormField *field, gint index)
+     g_return_if_fail(field->widget->getType() == formChoice);
+     g_return_if_fail(index >= 0 && index < poppler_form_field_choice_get_n_items(field));
+ 
+-    static_cast<FormWidgetChoice *>(field->widget)->toggle(index);
++    {
++        std::scoped_lock lock(field->document->form_mutex);
++        static_cast<FormWidgetChoice *>(field->widget)->toggle(index);
++    }
+ 
+     std::string name;
+     if (XFAForm *xfa = xfa_form_of(field, &name)) {
+@@ -1125,7 +1139,10 @@ void poppler_form_field_choice_set_text(PopplerFormField *field, const gchar *te
+     tmp = text ? g_convert(text, -1, "UTF-16BE", "UTF-8", nullptr, &length, nullptr) : nullptr;
+     std::unique_ptr<GooString> goo_tmp = std::make_unique<GooString>(tmp, length);
+     g_free(tmp);
+-    static_cast<FormWidgetChoice *>(field->widget)->setEditChoice(std::move(goo_tmp));
++    {
++        std::scoped_lock lock(field->document->form_mutex);
++        static_cast<FormWidgetChoice *>(field->widget)->setEditChoice(std::move(goo_tmp));
++    }
+ 
+     std::string name;
+     if (XFAForm *xfa = xfa_form_of(field, &name)) {
+diff --git a/glib/poppler-page.cc b/glib/poppler-page.cc
+index 3b9fb60..496b432 100644
+--- a/glib/poppler-page.cc
++++ b/glib/poppler-page.cc
+@@ -318,6 +318,7 @@ void poppler_page_render_full(PopplerPage *page, cairo_t *cairo, gboolean printi
+         }
+     }
+ 
++    std::scoped_lock formLock(page->document->form_mutex);
+     std::unique_lock lock(page->mutex);
+ 
+     output_dev = page->document->output_dev;
+diff --git a/glib/poppler-private.h b/glib/poppler-private.h
+index 206e95b..7578957 100644
+--- a/glib/poppler-private.h
++++ b/glib/poppler-private.h
+@@ -35,6 +35,9 @@ struct _PopplerDocument
+     GList *layers;
+     GList *layers_rbgroups;
+     CairoOutputDev *output_dev;
++    // Widget values are read while generating appearances on a render
++    // thread and replaced by the UI thread when an editor commits.
++    std::mutex form_mutex;
+ 
+     // Set on documents made by poppler_document_render_xfa(): the form
+     // engine, shared with the other documents rendered from the same form,
+diff --git a/glib/tests/check_xfa.c b/glib/tests/check_xfa.c
+index c1b5982..53cd82b 100644
+--- a/glib/tests/check_xfa.c
++++ b/glib/tests/check_xfa.c
+@@ -1403,6 +1403,62 @@ static void test_deep_script_tree(void)
+     g_bytes_unref(bytes);
+ }
+ 
++typedef struct
++{
++    PopplerPage *page;
++    gint start;
++} RenderEditData;
++
++static gpointer render_while_editing(gpointer user_data)
++{
++    RenderEditData *data = user_data;
++    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 612, 792);
++    cairo_t *cr = cairo_create(surface);
++    while (!g_atomic_int_get(&data->start)) {
++        g_thread_yield();
++    }
++    for (int i = 0; i < 300; ++i) {
++        poppler_page_render(data->page, cr);
++    }
++    cairo_destroy(cr);
++    cairo_surface_destroy(surface);
++    return NULL;
++}
++
++/* A view renders on a worker while focus-out commits on the UI thread.
++ * The widget's appearance must not read a freed text buffer. */
++static void test_render_while_editing(void)
++{
++    const char *xml = "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
++                      "<subform name=\"form1\" layout=\"tb\"><pageSet><pageArea>"
++                      "<contentArea x=\"1in\" y=\"1in\" w=\"6in\" h=\"9in\"/>"
++                      "<medium short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
++                      "<field name=\"who\" w=\"4in\" h=\"1in\"><ui><textEdit multiLine=\"1\"/></ui>"
++                      "<assist><toolTip>Name</toolTip></assist></field></subform></template>";
++    GBytes *bytes = build_pdf_from(xml);
++    GError *error = NULL;
++    PopplerDocument *source = poppler_document_new_from_bytes(bytes, NULL, &error);
++    g_assert_no_error(error);
++    PopplerDocument *doc = poppler_document_render_xfa(source, &error);
++    g_assert_no_error(error);
++    PopplerFormField *field = first_text_field(doc);
++    g_assert_nonnull(field);
++    RenderEditData data = { poppler_document_get_page(doc, 0), 0 };
++    GThread *thread = g_thread_new("render-edit", render_while_editing, &data);
++    g_atomic_int_set(&data.start, 1);
++    for (int i = 0; i < 300; ++i) {
++        char *value = g_strdup_printf("Answer %d\nAnother line with a different length %.*s", i, i % 30, "abcdefghijklmnopqrstuvwxyz012345");
++        poppler_form_field_text_set_text(field, value);
++        g_free(value);
++    }
++    g_thread_join(thread);
++    g_object_unref(data.page);
++    g_object_unref(field);
++    g_object_unref(doc);
++    g_object_unref(source);
++    g_bytes_unref(bytes);
++}
++
+ int main(int argc, char *argv[])
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -1429,5 +1485,6 @@ int main(int argc, char *argv[])
+     g_test_add_func("/xfa/event-target", test_event_target);
+     g_test_add_func("/xfa/data-binding", test_data_binding);
+     g_test_add_func("/xfa/unicode-text", test_unicode_text);
++    g_test_add_func("/xfa/render-while-editing", test_render_while_editing);
+     return g_test_run();
+ }
+-- 
+2.43.0
+

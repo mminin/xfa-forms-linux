@@ -25,6 +25,7 @@ Patch numbers refer to the current series in `patches/`.
 | Contributor / assistant | Work |
 |---|---|
 | Human maintainer, mminin | Directed the work, provided requirements and interactive feedback, and owns review, publication and maintenance. |
+| OpenAI Codex (2026-10-19 editing audit) | Evince 0018–0021 and Poppler 0040–0047: multiline and editable-choice editing, document-action commits, input filters, Unicode appearances, rendering synchronization, field addressing, script locals, deep-tree handling and instance-manager resolution. Added the corpus edit/save/reopen sweep and expanded GUI/core regressions; see [TESTING.md](TESTING.md). |
 | Claude (Opus 5.5 and 4.8, as credited in existing commit trailers) | Initial XFA engine, detection and rendering APIs, scripting, layout, initial Evince integration and fixes through Poppler 0007 and Evince 0006; later source-package cleanup, the federal-form corpus, Poppler 0010–0021 (images, tables, scripting, data DOM, FormCalc, validation, barcodes, formatting, pagination, focus and dialog API), Poppler 0026 (truncated images), Poppler 0027 (bounding recursive tree walks) and Evince 0012-0013 (teardown fix and Reader-style URL confirmation), the last three under Opus 4.8, and Evince 0009 (script-requested focus); under Opus 5.5, Poppler 0028–0039 (image size arithmetic, API warnings for script URLs, locales in picture clauses, the rest of FormCalc, SOM predicates, Acrobat's Doc object as `event.target`, bounded preorder walks, data binding, embedded copies of linked images, system fonts for characters the standard fonts lack, rotation, space above text) and Evince 0014–0017 (editor allocation, saved values in reopened editors, persistent script-URL sites and policy, Ctrl+wheel zoom). |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0008: preserve radio-button appearance states in ordinary PDF exports, with save/reopen regression coverage. |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0009: save and restore the live XFA form, scripts and form state; CLI support and regression coverage for saving, reopening and generating output again. |
@@ -78,6 +79,9 @@ For an individual merge request, narrow this wording to its actual patches.
    Carry the relevant attribution into each submission and the release notes.
 
 ## Follow-up verification (2026-10-16)
+
+The newer editing and sanitizer audit is recorded in [TESTING.md](TESTING.md).
+The results below describe the earlier 2026-10-16 build.
 
 - Rebuilt and installed the patched Poppler and Evince in the local development
   prefix. The system packages are unchanged.

@@ -214,7 +214,7 @@ static void test_dialogs (void)
 
 /* Exercise the actual EvView focus-out commit, not a direct backend setter.
  * A file reload can replace the model while the field's script asks a question. */
-static void test_editor_document_change (void)
+static void test_editor_document_change (gconstpointer data)
 {
     gchar *path = write_fixture ();
     gchar *uri = g_filename_to_uri (path, NULL, NULL);
@@ -254,7 +254,10 @@ static void test_editor_document_change (void)
     gtk_editable_set_text (GTK_EDITABLE (entry), "trigger");
     Answers answers = { 1, EV_FORM_ANSWER_CANCEL, FALSE, FALSE, GTK_WINDOW (window), 0, 0, model, replacement };
     guint source = g_timeout_add (20, answer_dialog, &answers);
-    gtk_widget_grab_focus (button);
+    if (GPOINTER_TO_INT (data))
+        ev_view_commit_form_fields (EV_VIEW (view));
+    else
+        gtk_widget_grab_focus (button);
     for (int i = 0; i < 500 && !answers.questions; ++i) {
         while (g_main_context_iteration (NULL, FALSE)) {}
         g_usleep (10000);
@@ -688,18 +691,262 @@ static void test_multiline_editor (void)
     g_free (path);
 }
 
+typedef struct {
+    gchar *path, *uri;
+    EvDocumentModel *model;
+    GtkWidget *window, *view, *button;
+} EditingFixture;
+
+static void spin_editing (void)
+{
+    for (int i = 0; i < 30; ++i) {
+        while (g_main_context_iteration (NULL, FALSE)) { }
+        g_usleep (10000);
+    }
+}
+
+static GtkWidget *find_widget_type (GtkWidget *widget, GType type)
+{
+    if (G_TYPE_CHECK_INSTANCE_TYPE (widget, type))
+        return widget;
+    for (GtkWidget *child = gtk_widget_get_first_child (widget); child;
+         child = gtk_widget_get_next_sibling (child)) {
+        GtkWidget *found = find_widget_type (child, type);
+        if (found)
+            return found;
+    }
+    return NULL;
+}
+
+static EditingFixture editing_fixture (const gchar *fields)
+{
+    gchar *fixture = g_strconcat (
+        "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
+        "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
+        "<subform name=\"form1\" layout=\"tb\">"
+        "<pageSet><pageArea><contentArea x=\"1in\" y=\"1in\" w=\"6in\" h=\"9in\"/>"
+        "<medium short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>",
+        fields, "</subform></template></xdp:xdp>", NULL);
+    EditingFixture f = { 0 };
+    f.path = write_fixture_xdp (fixture);
+    g_free (fixture);
+    f.uri = g_filename_to_uri (f.path, NULL, NULL);
+    GError *error = NULL;
+    EvDocument *document = ev_document_factory_get_document (f.uri, &error);
+    g_assert_no_error (error);
+    f.model = ev_document_model_new ();
+    f.view = GTK_WIDGET (ev_view_new ());
+    f.window = g_object_ref_sink (gtk_window_new ());
+    f.button = gtk_button_new_with_label ("Leave the field");
+    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    gtk_window_set_default_size (GTK_WINDOW (f.window), 800, 900);
+    ev_document_model_set_document (f.model, document);
+    ev_view_set_model (EV_VIEW (f.view), f.model);
+    g_object_unref (document);
+    gtk_widget_set_vexpand (f.view, TRUE);
+    gtk_box_append (GTK_BOX (box), f.view);
+    gtk_box_append (GTK_BOX (box), f.button);
+    gtk_window_set_child (GTK_WINDOW (f.window), box);
+    gtk_window_present (GTK_WINDOW (f.window));
+    spin_editing ();
+    return f;
+}
+
+static GtkWidget *editing_open (EditingFixture *f, GType type)
+{
+    for (int i = 0; i < 50; ++i) {
+        GtkWidget *editor = find_widget_type (f->view, type);
+        if (editor)
+            return editor;
+        gtk_widget_child_focus (f->view, GTK_DIR_TAB_FORWARD);
+        spin_editing ();
+    }
+    g_error ("No editor of type %s", g_type_name (type));
+    return NULL;
+}
+
+static void editing_assert_value (EditingFixture *f, const gchar *label, const gchar *expected)
+{
+    EvDocument *doc = ev_document_model_get_document (f->model);
+    EvFormField *field = find_field (doc, label);
+    gchar *value = EV_IS_FORM_FIELD_CHOICE (field) ?
+        ev_document_forms_form_field_choice_get_text (EV_DOCUMENT_FORMS (doc), field) :
+        ev_document_forms_form_field_text_get_text (EV_DOCUMENT_FORMS (doc), field);
+    g_assert_cmpstr (value ? value : "", ==, expected);
+    g_free (value);
+    g_object_unref (field);
+}
+
+static void editing_free (EditingFixture *f)
+{
+    gtk_window_destroy (GTK_WINDOW (f->window));
+    g_object_unref (f->window);
+    spin_editing ();
+    g_object_unref (f->model);
+    g_unlink (f->path);
+    g_free (f->path);
+    g_free (f->uri);
+}
+
+static void test_multiline_limit (void)
+{
+    EditingFixture f = editing_fixture (
+        "<field name=\"name\" w=\"3in\" h=\"0.8in\"><ui><textEdit multiLine=\"1\"/></ui>"
+        "<assist><toolTip>name</toolTip></assist><value><text maxChars=\"5\"/></value></field>");
+    GtkWidget *editor = editing_open (&f, GTK_TYPE_TEXT_VIEW);
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (editor));
+    GtkTextIter end;
+    gtk_text_buffer_get_end_iter (buffer, &end);
+    gtk_text_buffer_insert (buffer, &end, "abé中文f", -1);
+    g_assert_cmpint (gtk_text_buffer_get_char_count (buffer), ==, 5);
+    gchar *shown = text_view_text (editor);
+    g_assert_cmpstr (shown, ==, "abé中文");
+    g_free (shown);
+    gtk_widget_grab_focus (f.button);
+    spin_editing ();
+    editing_assert_value (&f, "name", "abé中文");
+    editing_free (&f);
+}
+
+static void test_editable_choice (gconstpointer data)
+{
+    gboolean activate = GPOINTER_TO_INT (data);
+    EditingFixture f = editing_fixture (
+        "<field name=\"country\" w=\"3in\" h=\"0.4in\"><ui><choiceList textEntry=\"1\"/></ui>"
+        "<assist><toolTip>country</toolTip></assist><value><text>ALPHA</text></value>"
+        "<items><text>ALPHA</text><text>BETA</text></items></field>");
+    GtkWidget *combo = editing_open (&f, GTK_TYPE_COMBO_BOX);
+    GtkWidget *entry = gtk_combo_box_get_child (GTK_COMBO_BOX (combo));
+    gtk_editable_set_text (GTK_EDITABLE (entry), "Custom");
+    if (activate)
+        g_signal_emit_by_name (entry, "activate");
+    else
+        gtk_widget_grab_focus (f.button);
+    spin_editing ();
+    editing_assert_value (&f, "country", "Custom");
+    if (!activate) {
+        gtk_widget_grab_focus (entry);
+        gtk_editable_set_text (GTK_EDITABLE (entry), "custom");
+        gtk_widget_grab_focus (f.button);
+        spin_editing ();
+        editing_assert_value (&f, "country", "custom");
+    }
+    editing_free (&f);
+}
+
+static void test_fast_field_transition (void)
+{
+    EditingFixture f = editing_fixture (
+        "<field name=\"a\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui>"
+        "<assist><toolTip>a</toolTip></assist><value><text>first</text></value>"
+        "<event activity=\"exit\"><script contentType=\"application/x-javascript\">"
+        "out.rawValue=this.rawValue;</script></event></field>"
+        "<field name=\"b\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui>"
+        "<assist><toolTip>b</toolTip></assist><value><text>second</text></value></field>"
+        "<field name=\"out\" w=\"3in\" h=\"0.4in\" access=\"nonInteractive\"><ui><textEdit/></ui></field>");
+    GtkWidget *a = editing_open (&f, GTK_TYPE_ENTRY);
+    gtk_editable_set_text (GTK_EDITABLE (a), "Alice");
+    gtk_widget_child_focus (f.view, GTK_DIR_TAB_FORWARD);
+    GtkWidget *b = find_entry (f.view);
+    g_assert_nonnull (b);
+    g_assert_cmpstr (gtk_editable_get_text (GTK_EDITABLE (b)), ==, "second");
+    gtk_editable_set_text (GTK_EDITABLE (b), "Bob");
+    gtk_widget_grab_focus (f.button);
+    spin_editing ();
+    editing_assert_value (&f, "a", "Alice");
+    editing_assert_value (&f, "b", "Bob");
+    editing_free (&f);
+}
+
+static void test_commit_active_editor (gconstpointer data)
+{
+    gboolean pending = GPOINTER_TO_INT (data);
+    EditingFixture f = editing_fixture (
+        "<field name=\"name\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui>"
+        "<assist><toolTip>name</toolTip></assist><value><text>before</text></value>"
+        "<event activity=\"exit\"><script contentType=\"application/x-javascript\">"
+        "out.rawValue=this.rawValue;</script></event></field>"
+        "<field name=\"out\" w=\"3in\" h=\"0.4in\" access=\"nonInteractive\"><ui><textEdit/></ui></field>");
+    GtkWidget *editor = editing_open (&f, GTK_TYPE_ENTRY);
+    gtk_editable_set_text (GTK_EDITABLE (editor), "Still editing");
+    if (pending)
+        gtk_widget_child_focus (f.view, GTK_DIR_TAB_FORWARD);
+    ev_view_commit_form_fields (EV_VIEW (f.view));
+    EvDocument *doc = ev_document_model_get_document (f.model);
+    g_assert_true (ev_document_forms_document_is_modified (EV_DOCUMENT_FORMS (doc)));
+    editing_assert_value (&f, "name", "Still editing");
+    EvPage *page = ev_document_get_page (doc, 0);
+    gchar *text = ev_document_text_get_text (EV_DOCUMENT_TEXT (doc), page);
+    g_assert_nonnull (strstr (text, "Still editing"));
+    g_free (text);
+    g_object_unref (page);
+    GError *error = NULL;
+    g_assert_true (ev_document_save (doc, f.uri, &error));
+    g_assert_no_error (error);
+    EvDocument *reopened = ev_document_factory_get_document (f.uri, &error);
+    g_assert_no_error (error);
+    EvFormField *field = find_field (reopened, "name");
+    text = ev_document_forms_form_field_text_get_text (EV_DOCUMENT_FORMS (reopened), field);
+    g_assert_cmpstr (text, ==, "Still editing");
+    g_free (text);
+    g_object_unref (field);
+    g_object_unref (reopened);
+    editing_free (&f);
+}
+
+static void test_unicode_edit (void)
+{
+    EditingFixture f = editing_fixture (
+        "<field name=\"name\" w=\"4in\" h=\"0.8in\"><ui><textEdit multiLine=\"1\"/></ui>"
+        "<assist><toolTip>name</toolTip></assist></field>");
+    GtkWidget *editor = editing_open (&f, GTK_TYPE_TEXT_VIEW);
+    EvDocument *original = g_object_ref (ev_document_model_get_document (f.model));
+    gtk_text_buffer_set_text (gtk_text_view_get_buffer (GTK_TEXT_VIEW (editor)), "Łukasz Иван 中文", -1);
+    gtk_widget_grab_focus (f.button);
+    spin_editing ();
+    editing_assert_value (&f, "name", "Łukasz Иван 中文");
+    EvDocument *doc = ev_document_model_get_document (f.model);
+    g_assert_true (doc != original);
+    g_object_unref (original);
+    GError *error = NULL;
+    g_assert_true (ev_document_save (doc, f.uri, &error));
+    g_assert_no_error (error);
+    /* EvDocumentText excludes annotations; pdftotext includes their
+     * appearances, which must embed the fonts for the entered name. */
+    gchar *argv[] = { "pdftotext", f.path, "-", NULL };
+    gchar *text = NULL;
+    gint status;
+    g_assert_true (g_spawn_sync (NULL, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL,
+                                &text, NULL, &status, &error));
+    g_assert_no_error (error);
+    g_assert_cmpint (status, ==, 0);
+    g_assert_nonnull (strstr (text, "Łukasz"));
+    g_assert_nonnull (strstr (text, "Иван"));
+    g_assert_nonnull (strstr (text, "中文"));
+    g_free (text);
+    editing_free (&f);
+}
+
 int main (int argc, char **argv)
 {
     g_test_init (&argc, &argv, NULL);
     gtk_init ();
     g_assert_true (ev_init ());
     g_test_add_func ("/view/xfa-dialogs", test_dialogs);
-    g_test_add_func ("/view/editor-document-change", test_editor_document_change);
+    g_test_add_data_func ("/view/editor-document-change", GINT_TO_POINTER (FALSE), test_editor_document_change);
+    g_test_add_data_func ("/view/commit-document-change", GINT_TO_POINTER (TRUE), test_editor_document_change);
     g_test_add_func ("/view/launch-url", test_launch_url);
     g_test_add_data_func ("/view/tab-refresh", GINT_TO_POINTER (FALSE), test_tab_refresh);
     g_test_add_data_func ("/view/multiline-tab-refresh", GINT_TO_POINTER (TRUE), test_tab_refresh);
     g_test_add_func ("/view/ctrl-wheel-zoom", test_ctrl_wheel_zoom);
     g_test_add_func ("/view/multiline-editor", test_multiline_editor);
+    g_test_add_func ("/view/multiline-limit", test_multiline_limit);
+    g_test_add_data_func ("/view/editable-choice-blur", GINT_TO_POINTER (FALSE), test_editable_choice);
+    g_test_add_data_func ("/view/editable-choice-enter", GINT_TO_POINTER (TRUE), test_editable_choice);
+    g_test_add_func ("/view/fast-field-transition", test_fast_field_transition);
+    g_test_add_data_func ("/view/commit-active-editor", GINT_TO_POINTER (FALSE), test_commit_active_editor);
+    g_test_add_data_func ("/view/commit-pending-editor", GINT_TO_POINTER (TRUE), test_commit_active_editor);
+    g_test_add_func ("/view/unicode-edit", test_unicode_edit);
     int result = g_test_run ();
     ev_shutdown ();
     return result;

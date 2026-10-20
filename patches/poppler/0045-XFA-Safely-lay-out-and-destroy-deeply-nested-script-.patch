@@ -1,0 +1,100 @@
+From f626f20f52b21500634d9fac07c397aa770769ae Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:20:49 -0700
+Subject: [PATCH] XFA: Safely lay out and destroy deeply nested script trees
+
+Destroy nodes iteratively in postorder without allocating a work stack, and give layout its own 128-level recursion budget: its large frames overflow a small stack well before the general DOM limit. The 6000-node form and data regressions now finish under AddressSanitizer and LeakSanitizer on a 1 MB stack.
+
+Reject appending a node to itself or its descendant before moving its owner, preventing unreachable ownership cycles.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ poppler/XFALayout.cc |  8 ++++++--
+ poppler/XFANode.cc   | 18 ++++++++++++++++--
+ poppler/XFAScript.cc |  5 +++++
+ 3 files changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/poppler/XFALayout.cc b/poppler/XFALayout.cc
+index 7bd8f6c..2dea489 100644
+--- a/poppler/XFALayout.cc
++++ b/poppler/XFALayout.cc
+@@ -151,6 +151,10 @@ XFAFieldGeometry XFAFieldGeometryOf(XFAForm *form, XFANode *field, double w, dou
+ 
+ namespace {
+ 
++// Measurement keeps larger stack frames than DOM walks. Leave room for
++// its container/table helpers even on a small rendering-thread stack.
++constexpr int layoutMaxDepth = 128;
++
+ struct Box
+ {
+     XFANode *node = nullptr;
+@@ -325,7 +329,7 @@ Box Layouter::measure(XFANode *node, double availW, std::optional<double> forced
+     b.node = node;
+     // Stop descending past the depth limit, leaving an empty box. Only a tree
+     // a script has nested abnormally deep ever reaches this.
+-    if (measureDepth >= XFANodeMaxDepth) {
++    if (measureDepth >= layoutMaxDepth) {
+         return b;
+     }
+     struct DepthGuard
+@@ -1058,7 +1062,7 @@ void Layouter::dropEmptyPage()
+ 
+ void Layouter::place(const Box &b, double px, double py, XFALayoutPage &lp, int pageIndex, int depth)
+ {
+-    if (depth >= XFANodeMaxDepth) {
++    if (depth >= layoutMaxDepth) {
+         return;
+     }
+     if (b.fragmentRow) {
+diff --git a/poppler/XFANode.cc b/poppler/XFANode.cc
+index 7ef8451..41dab47 100644
+--- a/poppler/XFANode.cc
++++ b/poppler/XFANode.cc
+@@ -49,8 +49,22 @@ XFANode::XFANode(XFADom *domA, std::string classNameA) : dom(domA), className(st
+ 
+ XFANode::~XFANode()
+ {
+-    // Children first, so lookups never return a node that is half destroyed.
+-    children.clear();
++    // Scripts can build trees deeper than the XML parser allows. Delete
++    // them in postorder without recursion or allocating a work stack.
++    XFANode *node = this;
++    while (true) {
++        if (!node->children.empty()) {
++            XFANode *child = node->children.back().release();
++            node->children.pop_back();
++            node = child;
++        } else if (node != this) {
++            XFANode *ancestor = node->parent;
++            delete node; // Its children are empty, so this cannot recurse.
++            node = ancestor;
++        } else {
++            break;
++        }
++    }
+     dom->unregisterNode(serial);
+ }
+ 
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 38be891..df0593f 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -1875,6 +1875,11 @@ NATIVE(appendNode)
+     XFANode *parent = nodeArg(ctx, ARG(0));
+     XFANode *n = nodeArg(ctx, ARG(1));
+     if (parent && n && n->getParent() && writable(formOf(ctx), parent) && n->getDom() == parent->getDom()) {
++        for (XFANode *ancestor = parent; ancestor; ancestor = ancestor->getParent()) {
++            if (ancestor == n) {
++                return JS_ThrowTypeError(ctx, "cannot append a node to itself or its descendant");
++            }
++        }
+         parent->appendChild(n->getParent()->removeChild(n));
+         formOf(ctx)->nodeChanged(parent);
+     }
+-- 
+2.43.0
+

@@ -2,7 +2,7 @@
 
 What still needs fixing in the XFA patch set, and why. This is the developer-facing
 list; the user-facing "Known gaps" in [README.md](README.md) is a shorter summary.
-Last reviewed 2026-10-19 (after the IMM 1295 editing report).
+Last reviewed 2026-10-19 (after the editing and sanitizer audit).
 
 Items are grouped and tagged with a rough priority: **P1** (fix before a serious
 upstream proposal), **P2** (should fix), **P3** (nice to have / documented limitation).
@@ -67,6 +67,17 @@ Draws and fields turn by their `rotate` attribute; containers do not, as turning
 them means turning all their content. **Why:** no corpus form rotates a container;
 the 357 rotated objects in the corpus are all draws and fields.
 
+### 15. Change scripts run on commit — P3
+The engine reconstructs the net edited span when a text field commits, and honors
+input filters and cancellation. It does not execute a change script after each
+keystroke. A script that depends on intermediate keystrokes, rather than the final
+answer, can behave differently from Reader.
+
+### 16. Extremely deep layout — P3
+Layout stops descending after 128 nested objects; general DOM walks have their own
+depth bounds. Measurement keeps large stack frames, so its limit must leave room
+on a small rendering-thread stack. No corpus form reaches the layout limit.
+
 ---
 
 ## Already fixed this cycle (for reference, no action needed)
@@ -121,6 +132,34 @@ the 357 rotated objects in the corpus are all draws and fields.
   redraws, reopening and Tab refresh; the actual IMM 1295 page 3 field was
   checked interactively, saved to a separate PDF and reopened with its value
   retained in both the widget and reusable XFA state.
+- Multiline editors ignored `/MaxLen`; insertion and paste now enforce the limit
+  in Unicode characters (Evince 0019).
+- Editable choices lost free text on focus-out or Enter, and ignored changes only
+  in capitalization (Evince 0020).
+- Closing the first still-active editor could discard its answer without a save
+  prompt. Save, print and the close/reload check now commit active and pending
+  editors; cancelling a close keeps modification notifications (Evince 0021).
+- Change-script filters, uppercase conversion and cancellation were discarded
+  after the script ran. The resulting edit is now applied (Poppler 0040).
+- Interactive fields lacked the font fallback used by page text, so non-Latin
+  answers could remain in `/V` while disappearing on screen (Poppler 0041).
+- Exported-field imports could fail under an anonymous subform, as in IMM 5669;
+  they now address the node directly (Poppler 0042).
+- A UI commit freed text while a render worker was generating its appearance.
+  Repeated sanitized GUI tests reproduced the crash. Widget mutations and page
+  rendering now share a document mutex, released before scripts or dialogs
+  (Poppler 0043).
+- Local script variables could overwrite same-named form fields. The local
+  function environment now sits inside the form's lookup scope (Poppler 0044).
+- Very deep script-created trees could overflow during destruction or layout,
+  and appending an ancestor could create an ownership cycle. Cleanup is iterative,
+  layout has a smaller stack budget, and cyclic appends are rejected (Poppler 0045).
+- Generated SOM expressions miscounted unnamed containers preceded by named
+  siblings of the same class; the expression now resolves back to its node
+  (Poppler 0046).
+- `resolveNode()` did not resolve instance-manager paths such as `Group._Row`.
+  Fixing local-variable shadowing exposed this in three IRCC layout-ready scripts;
+  relative, qualified and global manager lookups now work (Poppler 0047).
 
 - Verified before publishing (2026-10-19): a fresh clone of the public tree runs
   `scripts/bootstrap.sh` and `scripts/build.sh` from scratch, Zint included, and

@@ -1,0 +1,195 @@
+From 749873cbc864293f5808ce78ffca97571688aa38 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:11:32 -0700
+Subject: [PATCH] XFA: Apply the changes and cancellations of input scripts
+
+The event object was discarded after executing a change script, so numeric-only filters and uppercase conversion had no effect. Pass the resulting text and cancellation flags back to the form. Reconstruct the edited span from the previous and committed answers, respecting UTF-16 character boundaries, so a filter preserves unchanged text.
+
+Honor cancellation for choice selection too, preserve the event context across nested scripts and restore it even if an event property throws.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ poppler/XFAForm.cc   | 11 ++++++---
+ poppler/XFAForm.h    |  3 +++
+ poppler/XFAScript.cc | 59 ++++++++++++++++++++++++++++++++++++++------
+ poppler/XFAScript.h  |  2 +-
+ 4 files changed, 64 insertions(+), 11 deletions(-)
+
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index 119219e..b1cb56f 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -2302,12 +2302,15 @@ bool XFAForm::setFieldText(const std::string &fieldName, const std::string &valu
+     EventContext ctx;
+     ctx.activity = "change";
+     ctx.target = field;
+-    ctx.prevText = getRawValue(field).value_or("");
++    ctx.prevText = getWidgetValue(field).value_or("");
+     ctx.newText = value;
+     ctx.change = value;
++    ctx.textEdit = true;
+     fireEvent(field, "change", &ctx);
+     if ((field = formDom.lookup(serial))) {
+-        setFormattedValue(field, value);
++        if (!ctx.cancelAction && ctx.rc) {
++            setFormattedValue(field, ctx.newText);
++        }
+         fireEvent(field, "exit");
+     }
+     if ((field = formDom.lookup(serial))) {
+@@ -2341,7 +2344,9 @@ bool XFAForm::setFieldChoice(const std::string &fieldName, int index)
+     ctx.change = ctx.newText;
+     fireEvent(field, "change", &ctx);
+     if ((field = formDom.lookup(serial))) {
+-        setRawValue(field, saves[index]);
++        if (!ctx.cancelAction && ctx.rc) {
++            setRawValue(field, saves[index]);
++        }
+         fireEvent(field, "exit");
+     }
+     if ((field = formDom.lookup(serial))) {
+diff --git a/poppler/XFAForm.h b/poppler/XFAForm.h
+index ee8723a..fedcc68 100644
+--- a/poppler/XFAForm.h
++++ b/poppler/XFAForm.h
+@@ -196,6 +196,9 @@ public:
+         std::string newText;
+         std::string prevText;
+         std::string change;
++        bool textEdit = false;
++        bool cancelAction = false;
++        bool rc = true;
+     };
+     void fireEvent(XFANode *node, const std::string &activity, EventContext *ctx = nullptr);
+     void fireEventRecursive(XFANode *node, const std::string &activity);
+diff --git a/poppler/XFAScript.cc b/poppler/XFAScript.cc
+index 1bcdd61..91f909b 100644
+--- a/poppler/XFAScript.cc
++++ b/poppler/XFAScript.cc
+@@ -458,11 +458,29 @@ function eventTarget(id) {
+ }
+ function makeEvent(ev) {
+     ev = ev || { activity: "", newText: "", prevText: "", change: "", target: null };
+-    return {
++    var result = {
+         name: ev.activity, newText: ev.newText, prevText: ev.prevText, change: ev.change, fullText: ev.newText,
+         target: eventTarget(ev.target), selStart: 0, selEnd: 0, modifier: false, shift: false, keyDown: false,
+-        commitKey: 0, reenter: false, cancelAction: false, soapFaultCode: 0, soapFaultString: "", rc: true, value: ev.newText
++        commitKey: 0, reenter: false, cancelAction: !!ev.cancelAction, soapFaultCode: 0, soapFaultString: "", rc: ev.rc !== false, value: ev.newText
+     };
++    if (ev.textEdit && ev.activity === "change") {
++        // Viewers commit a complete answer. Expose its edited span so a
++        // filter can change or reject that span without losing the rest.
++        var prev = ev.prevText, next = ev.newText, start = 0, tail = 0;
++        while (start < prev.length && start < next.length && prev.charAt(start) === next.charAt(start)) start++;
++        function low(c) { return c >= 0xdc00 && c <= 0xdfff; }
++        if (start && (low(prev.charCodeAt(start)) || low(next.charCodeAt(start)))) start--;
++        while (tail < prev.length - start && tail < next.length - start &&
++               prev.charAt(prev.length - tail - 1) === next.charAt(next.length - tail - 1)) tail++;
++        if (tail && low(prev.charCodeAt(prev.length - tail))) tail--;
++        result.selStart = start;
++        result.selEnd = prev.length - tail;
++        result.change = next.slice(start, next.length - tail);
++        Object.defineProperty(result, "newText", { get: function () {
++            return prev.slice(0, this.selStart) + String(this.change) + prev.slice(this.selEnd);
++        } });
++    }
++    return result;
+ }
+ 
+ function scand(fmt, s) {
+@@ -1125,13 +1143,23 @@ Object.setPrototypeOf(g, new Proxy(Object.prototype, {
+ 
+ g.__run = function (__id, __src, __ev) {
+     var __prev = xfa.event;
+-    xfa.event = makeEvent(__ev);
++    var __current = makeEvent(__ev);
++    xfa.event = __current;
+     running.push(__id);
+     try {
+         return (function () { with (scopeFor(__id)) { return eval(__src); } }).call(wrap(__id));
+     } finally {
+-        running.pop();
+-        xfa.event = __prev;
++        try {
++            if (__ev) {
++                __ev.newText = __current.newText;
++                __ev.change = __current.change;
++                __ev.cancelAction = __current.cancelAction;
++                __ev.rc = __current.rc;
++            }
++        } finally {
++            running.pop();
++            xfa.event = __prev;
++        }
+     }
+ };
+ 
+@@ -2081,7 +2109,7 @@ void XFAScript::defineScriptObjects(XFANode *container)
+     }
+ }
+ 
+-XFAScript::Result XFAScript::run(XFANode *node, const std::string &source, const XFAForm::EventContext *event)
++XFAScript::Result XFAScript::run(XFANode *node, const std::string &source, XFAForm::EventContext *event)
+ {
+     Result res;
+     if (!d->ok) {
+@@ -2098,6 +2126,9 @@ XFAScript::Result XFAScript::run(XFANode *node, const std::string &source, const
+         JS_SetPropertyStr(ctx, ev, "newText", strValue(ctx, event->newText));
+         JS_SetPropertyStr(ctx, ev, "prevText", strValue(ctx, event->prevText));
+         JS_SetPropertyStr(ctx, ev, "change", strValue(ctx, event->change));
++        JS_SetPropertyStr(ctx, ev, "textEdit", JS_NewBool(ctx, event->textEdit));
++        JS_SetPropertyStr(ctx, ev, "cancelAction", JS_NewBool(ctx, event->cancelAction));
++        JS_SetPropertyStr(ctx, ev, "rc", JS_NewBool(ctx, event->rc));
+         JS_SetPropertyStr(ctx, ev, "target", idValue(ctx, event->target));
+     }
+     JSValue global = JS_GetGlobalObject(ctx);
+@@ -2108,6 +2139,20 @@ XFAScript::Result XFAScript::run(XFANode *node, const std::string &source, const
+         std::string where = node ? d->form->somExpression(node) : std::string("?");
+         d->form->logMessage("script error in " + where + " (" + (event ? event->activity : std::string("?")) + "): " + exceptionText(ctx));
+     } else {
++        if (event) {
++            JSValue value = JS_GetPropertyStr(ctx, ev, "newText");
++            event->newText = strArg(ctx, value);
++            JS_FreeValue(ctx, value);
++            value = JS_GetPropertyStr(ctx, ev, "change");
++            event->change = strArg(ctx, value);
++            JS_FreeValue(ctx, value);
++            value = JS_GetPropertyStr(ctx, ev, "cancelAction");
++            event->cancelAction = JS_ToBool(ctx, value);
++            JS_FreeValue(ctx, value);
++            value = JS_GetPropertyStr(ctx, ev, "rc");
++            event->rc = JS_ToBool(ctx, value);
++            JS_FreeValue(ctx, value);
++        }
+         res.ok = true;
+         res.undefined = JS_IsUndefined(r);
+         res.null = JS_IsNull(r);
+@@ -2145,7 +2190,7 @@ bool XFAScript::isAvailable()
+ 
+ void XFAScript::defineScriptObjects(XFANode *) { }
+ 
+-XFAScript::Result XFAScript::run(XFANode *, const std::string &, const XFAForm::EventContext *)
++XFAScript::Result XFAScript::run(XFANode *, const std::string &, XFAForm::EventContext *)
+ {
+     return {};
+ }
+diff --git a/poppler/XFAScript.h b/poppler/XFAScript.h
+index 886575e..6310d93 100644
+--- a/poppler/XFAScript.h
++++ b/poppler/XFAScript.h
+@@ -39,7 +39,7 @@ public:
+     };
+     // Runs source with "this" being node. The result is the completion
+     // value of the script, as needed for calculations.
+-    Result run(XFANode *node, const std::string &source, const XFAForm::EventContext *event);
++    Result run(XFANode *node, const std::string &source, XFAForm::EventContext *event);
+ 
+     struct Private;
+ 
+-- 
+2.43.0
+

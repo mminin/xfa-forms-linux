@@ -1,0 +1,273 @@
+From 5c3b848ea0dfdea154029baee29d4eb597354596 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:11:16 -0700
+Subject: [PATCH] libview, shell: Commit form editors before document actions
+
+Closing a fresh form with its first editor still active could report no modifications and discard the answer. Commit active editors and detached editors with pending focus-out saves before checking for modifications, saving, or printing. Apply script-driven document replacement before the shell obtains the document to use.
+
+Keep modified-state notifications connected when a close is cancelled. Hold the view, editors and window across script dialogs, and keep deferred GTK focus handling for ordinary editing.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ libview/ev-view-private.h |  1 +
+ libview/ev-view.c         | 81 +++++++++++++++++++++++++++++++++------
+ libview/ev-view.h         |  3 ++
+ shell/ev-window.c         | 22 +++++++++--
+ 4 files changed, 93 insertions(+), 14 deletions(-)
+
+diff --git a/libview/ev-view-private.h b/libview/ev-view-private.h
+index 2762bdc..dc7ee6d 100644
+--- a/libview/ev-view-private.h
++++ b/libview/ev-view-private.h
+@@ -236,6 +236,7 @@ typedef struct _EvViewPrivate {
+ 
+ 	/* Forms whose scripts change the document, such as XFA forms */
+ 	guint form_changes_idle_id;
++	GList *form_editor_actions;
+ 	gboolean form_dialog_running;
+ 	/* The field to edit again once the changed document is loaded */
+ 	gchar *refocus_field_name;
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 60503bd..b55fe8e 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2534,21 +2534,26 @@ typedef struct {
+ 	GtkWidget *widget;
+ 	EvView *view;
+ 	gboolean remove;
++	guint source_id;
+ } EvViewFormEditorAction;
+ 
+ static void ev_view_form_field_text_save (EvView *view, GtkWidget *widget);
+ static void ev_view_form_field_choice_save (EvView *view, GtkWidget *widget);
+ static void ev_view_form_field_text_changed (GObject *object, EvFormField *field);
+ 
+-static EvViewFormEditorAction *
+-ev_view_form_editor_action_new (GtkWidget *widget, EvView *view, gboolean remove)
++static void ev_view_form_editor_action_idle (gpointer user_data);
++
++static void
++ev_view_queue_form_editor_action (GtkWidget *widget, EvView *view, gboolean remove)
+ {
+ 	EvViewFormEditorAction *action = g_new0 (EvViewFormEditorAction, 1);
++	EvViewPrivate *priv = GET_PRIVATE (view);
+ 
+ 	action->widget = g_object_ref (widget);
+ 	action->view = g_object_ref (view);
+ 	action->remove = remove;
+-	return action;
++	action->source_id = g_idle_add_once (ev_view_form_editor_action_idle, action);
++	priv->form_editor_actions = g_list_append (priv->form_editor_actions, action);
+ }
+ 
+ /* Shows the current value of the fields in open text editors that the user
+@@ -2622,6 +2627,9 @@ ev_view_form_editor_action_idle (gpointer user_data)
+ {
+ 	EvViewFormEditorAction *action = user_data;
+ 	EvFormField *field = g_object_get_data (G_OBJECT (action->widget), "form-field");
++	EvViewPrivate *priv = GET_PRIVATE (action->view);
++
++	priv->form_editor_actions = g_list_remove (priv->form_editor_actions, action);
+ 
+ 	/* Run scripts after GTK has finished the focus/unparent transition.
+ 	 * In particular, a script dialog must not nest inside that transition. */
+@@ -2643,8 +2651,7 @@ static void
+ ev_view_form_field_destroy (GtkWidget *widget,
+ 			    EvView    *view)
+ {
+-	g_idle_add_once (ev_view_form_editor_action_idle,
+-			 ev_view_form_editor_action_new (widget, view, TRUE));
++	ev_view_queue_form_editor_action (widget, view, TRUE);
+ }
+ 
+ /* The name of the text or choice field being edited, if any */
+@@ -2965,6 +2972,61 @@ ev_view_form_changed (EvView *view)
+ 		priv->form_changes_idle_id = g_idle_add_once ((GSourceOnceFunc) ev_view_apply_form_changes, view);
+ }
+ 
++/**
++ * ev_view_commit_form_fields:
++ * @view: an #EvView
++ *
++ * Commits active form editors and pending focus-out saves before saving,
++ * printing or checking whether the document was modified. This may run
++ * form scripts and replace the model's document. Call outside GTK focus
++ * transitions and obtain the document from the model again afterwards.
++ *
++ * Since: 49
++ */
++void
++ev_view_commit_form_fields (EvView *view)
++{
++	EvViewPrivate *priv;
++	g_autoptr (EvView) self = NULL;
++	g_autoptr (GPtrArray) editors = NULL;
++
++	g_return_if_fail (EV_IS_VIEW (view));
++	priv = GET_PRIVATE (view);
++	if (!priv->document || priv->form_dialog_running)
++		return;
++	self = g_object_ref (view);
++
++	/* A Tab or click can already have detached the editor, with its
++	 * commit still pending. Include those answers before the active one. */
++	while (priv->form_editor_actions) {
++		EvViewFormEditorAction *action = priv->form_editor_actions->data;
++
++		g_source_remove (action->source_id);
++		ev_view_form_editor_action_idle (action);
++	}
++
++	editors = g_ptr_array_new_with_free_func (g_object_unref);
++	for (GtkWidget *child = gtk_widget_get_first_child (GTK_WIDGET (view));
++	     child; child = gtk_widget_get_next_sibling (child)) {
++		if (g_object_get_data (G_OBJECT (child), "form-field"))
++			g_ptr_array_add (editors, g_object_ref (child));
++	}
++	for (guint i = 0; i < editors->len; ++i) {
++		GtkWidget *editor = g_ptr_array_index (editors, i);
++		EvFormField *field = g_object_get_data (G_OBJECT (editor), "form-field");
++
++		if (EV_IS_FORM_FIELD_TEXT (field))
++			ev_view_form_field_text_save (view, editor);
++		else if (EV_IS_FORM_FIELD_CHOICE (field))
++			ev_view_form_field_choice_save (view, editor);
++	}
++	if (priv->form_changes_idle_id) {
++		g_clear_handle_id (&priv->form_changes_idle_id, g_source_remove);
++		ev_view_apply_form_changes (view);
++	}
++	ev_view_refresh_form_editors (view);
++}
++
+ typedef struct {
+ 	GWeakRef view;
+ 	GWeakRef document;
+@@ -3347,8 +3409,7 @@ ev_view_form_field_text_focus_out (GtkEventControllerFocus	*self,
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
+ 
+ 	if (priv->document)
+-		g_idle_add_once (ev_view_form_editor_action_idle,
+-				 ev_view_form_editor_action_new (widget, view, FALSE));
++		ev_view_queue_form_editor_action (widget, view, FALSE);
+ }
+ 
+ static void
+@@ -6548,8 +6609,7 @@ ev_view_remove_all_form_fields (EvView *view)
+ 		GtkWidget *next = gtk_widget_get_next_sibling (child);
+ 
+ 		if (g_object_get_data (G_OBJECT (child), "form-field")) {
+-			g_idle_add_once (ev_view_form_editor_action_idle,
+-					 ev_view_form_editor_action_new (child, view, FALSE));
++			ev_view_queue_form_editor_action (child, view, FALSE);
+ 			gtk_widget_unparent (child);
+ 		}
+ 
+@@ -6566,8 +6626,7 @@ ev_view_remove_all (EvView *view)
+ 		GtkWidget *next = gtk_widget_get_next_sibling (child);
+ 
+ 		if (g_object_get_data (G_OBJECT (child), "form-field"))
+-			g_idle_add_once (ev_view_form_editor_action_idle,
+-					 ev_view_form_editor_action_new (child, view, FALSE));
++			ev_view_queue_form_editor_action (child, view, FALSE);
+ 		gtk_widget_unparent (child);
+ 
+ 		child = next;
+diff --git a/libview/ev-view.h b/libview/ev-view.h
+index d956bcf..6c368a7 100644
+--- a/libview/ev-view.h
++++ b/libview/ev-view.h
+@@ -80,6 +80,9 @@ void            ev_view_set_form_url_sites  (EvView              *view,
+ 					     const gchar * const *allowed,
+ 					     const gchar * const *blocked);
+ 
++EV_PUBLIC
++void            ev_view_commit_form_fields (EvView *view);
++
+ /* Clipboard */
+ EV_PUBLIC
+ void		ev_view_copy		  (EvView         *view);
+diff --git a/shell/ev-window.c b/shell/ev-window.c
+index f9c53d9..cca7079 100644
+--- a/shell/ev-window.c
++++ b/shell/ev-window.c
+@@ -3112,11 +3112,17 @@ static void
+ ev_window_save_as (EvWindow *ev_window)
+ {
+ 	EvWindowPrivate *priv = GET_PRIVATE (ev_window);
++	g_autoptr (GtkWindow) self = g_object_ref (GTK_WINDOW (ev_window));
+ 	GtkFileChooserNative *fc;
+ 	gchar *base_name, *dir_name, *var_tmp_dir, *tmp_dir;
+ 	GFile *file, *parent, *dest_file;
+ 	const gchar *default_dir, *dest_dir, *documents_dir;
+ 
++	if (EV_IS_VIEW (priv->view))
++		ev_view_commit_form_fields (EV_VIEW (priv->view));
++	if (!priv->document)
++		return;
++
+ 	fc = gtk_file_chooser_native_new (
+ 		_("Save As…"),
+ 		GTK_WINDOW (ev_window), GTK_FILE_CHOOSER_ACTION_SAVE,
+@@ -3680,6 +3686,7 @@ ev_window_print_range (EvWindow *ev_window,
+ 		       gint      last_page)
+ {
+ 	EvPrintOperation *op;
++	g_autoptr (GtkWindow) self = NULL;
+ 	GKeyFile         *print_settings_file;
+ 	GtkPrintSettings *print_settings;
+ 	GtkPageSetup     *print_page_setup;
+@@ -3691,8 +3698,13 @@ ev_window_print_range (EvWindow *ev_window,
+ 	EvWindowPrivate *priv;
+ 
+ 	g_return_if_fail (EV_IS_WINDOW (ev_window));
++	self = g_object_ref (GTK_WINDOW (ev_window));
+ 	priv = GET_PRIVATE (ev_window);
+ 	g_return_if_fail (priv->document != NULL);
++	if (EV_IS_VIEW (priv->view))
++		ev_view_commit_form_fields (EV_VIEW (priv->view));
++	if (!priv->document)
++		return;
+ 
+ 	if (!priv->print_queue)
+ 		priv->print_queue = g_queue_new ();
+@@ -3857,11 +3869,15 @@ ev_window_check_document_modified (EvWindow      *ev_window,
+ 				   EvWindowAction command)
+ {
+ 	EvWindowPrivate *priv = GET_PRIVATE (ev_window);
+-	EvDocument  *document = priv->document;
++	EvDocument  *document;
++	g_autoptr (GtkWindow) self = g_object_ref (GTK_WINDOW (ev_window));
+ 	GtkWidget   *dialog;
+ 	gchar       *text, *markup;
+ 	const gchar *secondary_text, *secondary_text_command;
+ 
++	if (EV_IS_VIEW (priv->view))
++		ev_view_commit_form_fields (EV_VIEW (priv->view));
++	document = priv->document;
+ 	if (!document)
+ 		return FALSE;
+ 
+@@ -4081,14 +4097,14 @@ ev_window_close (EvWindow *ev_window)
+ 		ev_document_model_set_page (priv->model, current_page);
+ 	}
+ 
+-	g_clear_signal_handler (&priv->modified_handler_id, priv->document);
+-
+ 	if (ev_window_check_document_modified (ev_window, EV_WINDOW_ACTION_CLOSE))
+ 		return FALSE;
+ 
+ 	if (ev_window_check_print_queue (ev_window))
+ 		return FALSE;
+ 
++	g_clear_signal_handler (&priv->modified_handler_id, priv->document);
++
+ 	if (!ev_window_is_recent_view (ev_window))
+ 		ev_window_save_settings (ev_window);
+ 
+-- 
+2.43.0
+

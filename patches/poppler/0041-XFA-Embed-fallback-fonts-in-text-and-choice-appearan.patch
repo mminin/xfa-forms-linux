@@ -1,0 +1,158 @@
+From 07fb7d915c78f7511da03b81d80dcdb6f745bc6f Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:11:32 -0700
+Subject: [PATCH] XFA: Embed fallback fonts in text and choice appearances
+
+Page text used embedded system fonts for letters outside WinAnsi, but interactive fields still relied on viewer-generated appearances in a standard font. Their values could retain a name while the visible page lost its letters.
+
+Supply appearances using the same fallback fonts, including rotated widgets, and request a rerender when an edited answer needs them. Ordinary WinAnsi appearances keep their existing path.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ poppler/XFAFonts.h   |  3 +++
+ poppler/XFAForm.cc   |  6 +++++-
+ poppler/XFAText.cc   | 11 +++++++++++
+ poppler/XFAWriter.cc | 43 +++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 62 insertions(+), 1 deletion(-)
+
+diff --git a/poppler/XFAFonts.h b/poppler/XFAFonts.h
+index cb584c9..6a32130 100644
+--- a/poppler/XFAFonts.h
++++ b/poppler/XFAFonts.h
+@@ -26,6 +26,9 @@ struct XFAFallbackFace;
+ // Whether the standard fonts show code point cp, in WinAnsiEncoding.
+ bool XFAWinAnsiShows(unsigned int cp);
+ 
++// Whether text needs a font beyond WinAnsi for its visible characters.
++bool XFATextNeedsFallback(const std::string &text);
++
+ // The face to show cp with instead of standard font standardFont (see
+ // XFAStandardFontName()), or nullptr when no system font has it.
+ const XFAFallbackFace *XFAFallbackFaceFor(unsigned int cp, int standardFont);
+diff --git a/poppler/XFAForm.cc b/poppler/XFAForm.cc
+index b1cb56f..1703985 100644
+--- a/poppler/XFAForm.cc
++++ b/poppler/XFAForm.cc
+@@ -17,6 +17,7 @@
+ #include "PDFDoc.h"
+ #include "Stream.h"
+ #include "XFAFormCalc.h"
++#include "XFAFonts.h"
+ #include "XFALayout.h"
+ #include "XFAPicture.h"
+ #include "XFAScript.h"
+@@ -2232,7 +2233,10 @@ bool XFAForm::afterChange(XFANode *editedField, const std::optional<std::string>
+         }
+     }
+     const VisibleState now = visibleState();
+-    if (now == shownState) {
++    // Poppler's ordinary field appearance cannot show characters outside
++    // WinAnsi. Rebuild their appearance with the XFA font fallback too.
++    const bool fallback = editedField && XFATextNeedsFallback(getFormattedValue(editedField));
++    if (now == shownState && !fallback) {
+         return false;
+     }
+     ++changeCount;
+diff --git a/poppler/XFAText.cc b/poppler/XFAText.cc
+index d90eacf..51fc73a 100644
+--- a/poppler/XFAText.cc
++++ b/poppler/XFAText.cc
+@@ -208,6 +208,17 @@ double XFAFont::width(const std::string &utf8) const
+     return w * size / 1000.0 * hScale() / 100.0 + letterSpacing * n;
+ }
+ 
++bool XFATextNeedsFallback(const std::string &text)
++{
++    for (size_t i = 0; i < text.size();) {
++        const unsigned int cp = nextCodePoint(text, i);
++        if (cp != '\n' && cp != '\r' && cp != '\t' && !XFAWinAnsiShows(cp)) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ bool XFAWinAnsiShows(unsigned int cp)
+ {
+     return cp < 0x20 || cp == 0x7F || cp == '?' || cp == 0xFFFD || winAnsiCode(cp) != '?';
+diff --git a/poppler/XFAWriter.cc b/poppler/XFAWriter.cc
+index ed08782..0542ca5 100644
+--- a/poppler/XFAWriter.cc
++++ b/poppler/XFAWriter.cc
+@@ -305,6 +305,7 @@ private:
+     void addWidget(XFANode *field, const XFAFieldGeometry &g, double x, double y, double w, double h);
+     std::string da(const XFAFont &font) const;
+     int circleAppearance(double size, bool filled);
++    int textAppearance(XFANode *field, const std::string &text, double w, double h, int rotation);
+     std::string rect(double x, double y, double w, double h) const;
+     void turnedRect(double &x, double &y, double &w, double &h) const;
+ 
+@@ -680,6 +681,40 @@ int Writer::circleAppearance(double size, bool filled)
+     return pdf.addStream("/Type /XObject /Subtype /Form /BBox [0 0 " + num(size) + " " + num(size) + "] /Resources << >>", ops);
+ }
+ 
++// Supplied appearances keep the same embedded fallback fonts as page text.
++// Without one, a viewer regenerates the widget in its standard font and
++// drops letters that font cannot show, although /V still holds the answer.
++int Writer::textAppearance(XFANode *field, const std::string &text, double w, double h, int rotation)
++{
++    PageOut appearance {};
++    appearance.height = h;
++    PageOut *saved = page;
++    page = &appearance;
++    appearance.ops = "q\n0 0 " + num(w) + " " + num(h) + " re W n\n";
++    const XFAFont font = XFAFontOf(field);
++    const XFAPara para = XFAParaOf(field);
++    drawText(XFAParagraphsOfText(text, font, para), para, 2, 1, std::max(0.0, w - 4), std::max(0.0, h - 2), nullptr);
++    appearance.ops += "Q\n";
++    page = saved;
++    std::string fonts = "<<";
++    for (int i = 0; i < 14; ++i) {
++        fonts += " /F" + std::to_string(i) + " " + ref(fontObjects[i]);
++    }
++    for (const auto &[face, ff] : fallbackFonts) {
++        fonts += " /" + ff.resource + " " + ref(ff.obj);
++    }
++    fonts += " >>";
++    std::string matrix;
++    if (rotation == 90) {
++        matrix = " /Matrix [0 1 -1 0 " + num(h) + " 0]";
++    } else if (rotation == 180) {
++        matrix = " /Matrix [-1 0 0 -1 " + num(w) + " " + num(h) + "]";
++    } else if (rotation == 270) {
++        matrix = " /Matrix [0 -1 1 0 0 " + num(w) + "]";
++    }
++    return pdf.addStream("/Type /XObject /Subtype /Form /BBox [0 0 " + num(w) + " " + num(h) + "]" + matrix + " /Resources << /Font " + fonts + " >>", appearance.ops);
++}
++
+ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, double y, double w, double h)
+ {
+     if (!interactive(field) || form->getPresence(field) != "visible") {
+@@ -707,6 +742,7 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub
+     }
+     // A turned field's widget covers its turned box, and viewers turn its
+     // appearance by /R.
++    const double appearanceW = rw, appearanceH = rh;
+     turnedRect(rx, ry, rw, rh);
+     const std::string turn = turned ? " /R " + std::to_string(turned->rotate) : std::string();
+     std::string common = "/Type /Annot /Subtype /Widget /Rect [" + num(rx) + " " + num(py(ry + rh)) + " " + num(rx + rw) + " " + num(py(ry)) + "] /F 4 /P " + ref(page->pageObj);
+@@ -814,6 +850,13 @@ void Writer::addWidget(XFANode *field, const XFAFieldGeometry &g, double x, doub
+             dict += " /V " + pdfTextString(*shown);
+         }
+     }
++    if (!blankValues && (ui == "textEdit" || ui == "numericEdit" || ui == "dateTimeEdit" || ui == "choiceList")) {
++        const std::string text = ui == "choiceList" ? form->getFormattedValue(field) : form->getWidgetValue(field).value_or("");
++        if (XFATextNeedsFallback(text)) {
++            const int appearance = textAppearance(field, text, appearanceW, appearanceH, turned ? turned->rotate : 0);
++            dict += " /AP << /N " + ref(appearance) + " >>";
++        }
++    }
+     dict += " >>";
+     const int obj = pdf.add(dict);
+     fields.push_back(obj);
+-- 
+2.43.0
+

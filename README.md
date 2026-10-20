@@ -58,6 +58,8 @@ developer list of what still needs fixing and why is in [KNOWN_ISSUES.md](KNOWN_
 - Scripts run before a view is attached, and command-line rendering, still answer
   questions automatically and use default prompt text. Interactive editing uses
   real dialogs. Remaining corpus script failures are listed in `corpus/README.md`.
+- Change-event input filters run when a field commits, using its net edited span.
+  Per-keystroke script execution is not implemented.
 
 ## How it works
 
@@ -131,6 +133,7 @@ This runs the synthetic Poppler tests, which build small XFA forms in memory:
   barcodes, picture clauses, pagination and script-requested focus
 - dialog answers, cancellations, callback replacement and an answer taking longer
   than the script execution limit
+- editing a field while a worker renders its appearance
 
 On a private GTK display, `scripts/test-dialogs.sh` also exercises the Evince
 backend and view with synthetic forms: question button sets, prompt defaults and
@@ -139,6 +142,12 @@ an active display and session bus, such as the `tools/headless/` session. With
 that session running, set `GDK_BACKEND=wayland`, `WAYLAND_DISPLAY=wl-xfa`, the same
 `XDG_RUNTIME_DIR` used to start it, and
 `DBUS_SESSION_BUS_ADDRESS="$(cat tools/headless/bus)"`.
+
+The GUI suite also covers multiline text and Unicode limits, editable choices,
+Tab transitions, committing before save/close/print, document replacement during
+a commit, and non-Latin widget appearances. See [TESTING.md](TESTING.md) for the
+2026-10-19 audit, the corpus edit/save/reopen sweep, and the additional synthetic
+and sanitizer checks in `tools/qa/`.
 
 If the sample form has been downloaded, it then also fills it in with made-up data
 (`tools/consent-letter-scenario.sh`), clicks Generate letter, and checks that the
@@ -189,8 +198,16 @@ Poppler (`patches/poppler/`, about 15,100 added lines):
 | 0037 | Characters the standard fonts lack, drawn with embedded, subsetted system fonts |
 | 0038 | Rotated draws and fields (`rotate`), laid out and drawn turned |
 | 0039 | Keep the space above the first paragraph of text, as Acrobat does |
+| 0040 | Apply input filters, uppercase conversion and change-event cancellation |
+| 0041 | Embed fallback fonts in text and choice widget appearances |
+| 0042 | Set exported fields directly, including those under anonymous containers |
+| 0043 | Synchronize widget mutations with page rendering |
+| 0044 | Let script local variables shadow equally named form fields |
+| 0045 | Destroy deep trees iteratively, bound layout's stack usage and reject cyclic appends |
+| 0046 | Generate correct class indices for anonymous SOM containers |
+| 0047 | Resolve relative, qualified and global instance-manager paths |
 
-Evince (`patches/evince/`, about 1,500 added lines):
+Evince (`patches/evince/`):
 
 | Patch | What it does |
 |---|---|
@@ -210,6 +227,10 @@ Evince (`patches/evince/`, about 1,500 added lines):
 | 0015 | Show the saved value in a form editor that opened before the save, as when Tab returns to the same field |
 | 0016 | Keep allowed and blocked sites for form scripts across sessions, with a policy for other sites (settings `form-url-*`) |
 | 0017 | Ctrl+wheel zooms again: the view's scroll controller had no axes (upstream GTK 4 port) |
+| 0018 | Load, track and refresh multiline editor values; preserve capitalization-only edits |
+| 0019 | Respect multiline character limits, including Unicode paste |
+| 0020 | Commit editable choices on focus-out and Enter |
+| 0021 | Commit active and pending editors before save, print, close or reload checks |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.

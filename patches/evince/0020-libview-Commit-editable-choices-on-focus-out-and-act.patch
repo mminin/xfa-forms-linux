@@ -1,0 +1,71 @@
+From 4be3ae6161290750ecff5bbac6eb1895a1f3ca5f Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:11:16 -0700
+Subject: [PATCH] libview: Commit editable choices on focus-out and activation
+
+The entry's activate signal was handed to the editor-close callback with the child entry rather than the form's combo box, so Enter saved nothing. Commit the combo on activation and when focus leaves it. Preserve capitalization-only edits and clear cached selections before reopening an editor.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ libview/ev-view.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 2704aef..60503bd 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -3504,8 +3504,7 @@ ev_view_form_field_choice_changed (GtkWidget   *widget,
+ 			const gchar *text;
+ 
+ 			text = gtk_editable_get_text (GTK_EDITABLE (gtk_combo_box_get_child (GTK_COMBO_BOX (widget))));
+-			if (!field_choice->text ||
+-			    (field_choice->text && g_ascii_strcasecmp (field_choice->text, text) != 0)) {
++			if (g_strcmp0 (field_choice->text, text) != 0) {
+ 				g_free (field_choice->text);
+ 				field_choice->text = g_strdup (text);
+ 				field->changed = TRUE;
+@@ -3603,6 +3602,16 @@ ev_view_form_field_choice_popup_tick_cb (GtkWidget     *choice,
+ 	return G_SOURCE_REMOVE;
+ }
+ 
++static void
++ev_view_form_field_choice_activate (GtkWidget *entry,
++				   EvView    *view)
++{
++	GtkWidget *choice = gtk_widget_get_ancestor (entry, GTK_TYPE_COMBO_BOX);
++
++	if (choice)
++		ev_view_form_field_destroy (choice, view);
++}
++
+ static GtkWidget *
+ ev_view_form_field_choice_create_widget (EvView      *view,
+ 					 EvFormField *field)
+@@ -3616,6 +3625,7 @@ ev_view_form_field_choice_create_widget (EvView      *view,
+ 
+ 	n_items = ev_document_forms_form_field_choice_get_n_items (EV_DOCUMENT_FORMS (priv->document),
+ 								   field);
++	g_clear_pointer (&field_choice->selected_items, g_list_free);
+ 	model = GTK_TREE_MODEL (gtk_list_store_new (2, G_TYPE_STRING, G_TYPE_INT));
+ 	for (i = 0; i < n_items; i++) {
+ 		GtkTreeIter iter;
+@@ -3694,8 +3704,12 @@ ev_view_form_field_choice_create_widget (EvView      *view,
+ 				  field);
+ 		g_signal_connect_after (gtk_combo_box_get_child (GTK_COMBO_BOX (choice)),
+ 					"activate",
+-					G_CALLBACK (ev_view_form_field_destroy),
++					G_CALLBACK (ev_view_form_field_choice_activate),
+ 					view);
++		GtkEventController *controller = gtk_event_controller_focus_new ();
++		g_signal_connect (controller, "leave",
++				  G_CALLBACK (ev_view_form_field_text_focus_out), view);
++		gtk_widget_add_controller (choice, controller);
+ 	} else { /* ComboBoxText */
+ 		GtkCellRenderer *renderer;
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,60 @@
+From cdf057dc98efc4d520beb9b41d94840e355fdf75 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 18:11:16 -0700
+Subject: [PATCH] libview: Respect character limits in multiline form editors
+
+Limit inserted text in characters, as GtkEntry does, and truncate pasted text at a UTF-8 boundary. A multiline field previously accepted more than the PDF's MaxLen.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ libview/ev-view.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index 9aab4b5..2704aef 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -3317,6 +3317,28 @@ ev_view_form_field_text_changed (GObject     *object,
+ 		g_free (text);
+ }
+ 
++static void
++ev_view_form_field_text_insert (GtkTextBuffer *buffer,
++			       GtkTextIter   *location,
++			       gchar         *text,
++			       gint           length,
++			       EvFormField   *field)
++{
++	gint max_len = EV_FORM_FIELD_TEXT (field)->max_len;
++	glong available;
++
++	if (max_len <= 0)
++		return;
++	available = MAX (0, max_len - gtk_text_buffer_get_char_count (buffer));
++	if (g_utf8_strlen (text, length) <= available)
++		return;
++
++	g_signal_stop_emission_by_name (buffer, "insert-text");
++	if (available > 0)
++		gtk_text_buffer_insert (buffer, location, text,
++				       g_utf8_offset_to_pointer (text, available) - text);
++}
++
+ static void
+ ev_view_form_field_text_focus_out (GtkEventControllerFocus	*self,
+ 				   EvView			*view)
+@@ -3385,6 +3407,8 @@ ev_view_form_field_text_create_widget (EvView      *view,
+ 
+ 		source = G_OBJECT (buffer);
+ 		gtk_text_buffer_set_text (buffer, txt ? txt : "", -1);
++		g_signal_connect (buffer, "insert-text",
++				  G_CALLBACK (ev_view_form_field_text_insert), field);
+ 	} else {
+ 		source = G_OBJECT (text);
+ 		gtk_editable_set_text (GTK_EDITABLE (text), txt ? txt : "");
+-- 
+2.43.0
+
