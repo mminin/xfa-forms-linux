@@ -143,6 +143,12 @@ that session running, set `GDK_BACKEND=wayland`, `WAYLAND_DISPLAY=wl-xfa`, the s
 `XDG_RUNTIME_DIR` used to start it, and
 `DBUS_SESSION_BUS_ADDRESS="$(cat tools/headless/bus)"`.
 
+On that same display, `scripts/test-printing.sh` checks actual preview helper
+launches, Print to File and cancellation for ordinary PDFs and XFA forms, using
+both printing implementations. It inspects the preview executable and backend
+and verifies page counts and text in generated PDFs. It sends no physical print
+jobs and requires `pdfinfo` and `pdftotext`.
+
 The GUI suite also covers multiline text and Unicode limits, editable choices,
 Tab transitions, committing before save/close/print, document replacement during
 a commit, and non-Latin widget appearances. See [TESTING.md](TESTING.md) for the

@@ -1,4 +1,34 @@
-# Editing and sanitizer audit — 2026-10-19
+# Editing and printing audits
+
+## Printing follow-up — 2026-10-20
+
+The original audit checked print-mode PDF generation and active-editor commits,
+but missed the external desktop preview launch. The launcher inherited the system
+`PATH`, so GTK's `evince --preview` command selected the system viewer and
+previewer. The system previewer's AppArmor profile then denied executable mapping
+of the local PDF backend, producing “failed to map segment from shared object”.
+
+The launcher now puts its own installation's `bin` directory first, keeping the
+viewer, previewer and PDF backend together. AppArmor and system configuration are
+unchanged. The failure was reproduced in the real UI before the fix, then the
+same two-page PDF rendered successfully in preview afterwards.
+
+`scripts/test-printing.sh`, run on the isolated desktop, covers 14 scenarios:
+preview, Print to File and cancellation for ordinary PDFs and XFA forms through
+both direct and export printing, plus two launcher checks starting with a system
+`PATH`. The checks verify the actual preview process's executable and loaded PDF
+backend, and compare page counts and text in the preview and output PDFs. Fixture
+and settings paths include spaces and apostrophes. All jobs select Print to File;
+these checks do not test a physical printer or its driver.
+
+An additional UI check used the Print button inside preview and verified the
+resulting two-page PDF. The ordinary 17-page PDF from the reported failure also
+printed to a file successfully, preserving the page count and article text.
+
+Artifacts are written under `_work/qa/printing-regressions/`. Start a new viewer
+process through `scripts/run-evince.sh` after updating the launcher.
+
+## Editing and sanitizer audit — 2026-10-19
 
 The audit started with IMM 1295 text disappearing after leaving an editor. It
 expanded beyond blank-form rendering to real editor commits, document actions,
