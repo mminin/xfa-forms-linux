@@ -6,7 +6,9 @@ Revision 1's launcher smoke tests inherited the private data path in the session
 bus and did not check registration errors. A fresh bus using only standard data
 paths reproduces the missing `org.gnome.Evince.XFA.Daemon` service. Revision 2
 installs its activation file under `/usr/share/dbus-1/services`; its daemon still
-runs through the private library wrapper. `tools/qa/test_desktop.py` checks service
+runs through the private library wrapper. Evince 0024 also makes the daemon own
+the selected application ID's bus name while keeping the XML protocol interface
+consistent between client and daemon. `tools/qa/test_desktop.py` checks service
 discovery before launching, registration and reopening for ordinary and XFA PDFs.
 
 Real mouse presses held across GTK frames also reproduce active-state warnings

@@ -2,7 +2,7 @@
 
 First experimental release of the Poppler and Evince patches for opening,
 editing, saving and printing dynamic XFA forms on Linux. The release contains
-47 Poppler patches, 23 Evince patches, build scripts and regression tools.
+47 Poppler patches, 24 Evince patches, build scripts and regression tools.
 
 ## Features
 

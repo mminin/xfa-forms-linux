@@ -17,6 +17,7 @@ from test_core import pdf as xfa_pdf, template
 from test_printing import pdf, stream
 
 SERVICE = "org.gnome.Evince.XFA.Daemon"
+OBJECT_PATH = "/org/gnome/Evince/XFA/Daemon"
 LAUNCHER = os.environ.get("XFA_TEST_LAUNCHER", "/usr/bin/xfa-forms-linux")
 
 
@@ -47,7 +48,7 @@ class Desktop(unittest.TestCase):
                     owner = ""
                     while time.monotonic() < deadline:
                         self.assertIsNone(process.poll(), log.read_text())
-                        owner, = call(SERVICE, "/org/gnome/evince/Daemon",
+                        owner, = call(SERVICE, OBJECT_PATH,
                                       "org.gnome.Evince.Daemon.FindDocument", source.as_uri(), "false")
                         if owner:
                             break
@@ -57,7 +58,7 @@ class Desktop(unittest.TestCase):
                     reopened = subprocess.run([LAUNCHER, str(source)], stdout=subprocess.PIPE,
                                               stderr=subprocess.PIPE, timeout=10)
                     self.assertEqual(reopened.returncode, 0, reopened.stderr.decode())
-                    same_owner, = call(SERVICE, "/org/gnome/evince/Daemon",
+                    same_owner, = call(SERVICE, OBJECT_PATH,
                                            "org.gnome.Evince.Daemon.FindDocument", source.as_uri(), "false")
                     self.assertEqual(same_owner, owner)
                     self.assertIsNone(process.poll())

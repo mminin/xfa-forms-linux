@@ -263,6 +263,7 @@ Evince (`patches/evince/`):
 | 0021 | Commit active and pending editors before save, print, close or reload checks |
 | 0022 | Allow a separate application ID for the Ubuntu package and its desktop integration |
 | 0023 | Activate form dropdowns on mouse release to preserve GTK pointer state |
+| 0024 | Match daemon bus names to the selected application ID and keep the protocol interface stable |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.
