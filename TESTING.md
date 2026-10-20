@@ -19,6 +19,16 @@ three held-click/selection cycles and drag-away cancellation. This new regressio
 fails against revision 1. Six complete-source and 16 release-asset tests pass,
 including package-revision validation and checksums for revised assets.
 
+In an Ubuntu 24.04 container with system Evince installed, upgrading from
+`0.1.0-1` to `0.1.0-2` passed registration/reopen checks on a bus started before
+the upgrade and on a fresh bus (three checks each). As an ordinary user, the
+installed libraries passed all 16 GUI checks, 14 print-to-file scenarios,
+28 core regressions and 71 FormCalc expressions. Removal deleted the private
+prefix and global activation file. System Evince, system Poppler and an existing
+PDF-default configuration retained their original hashes. The final artifact's
+runtime files are compared with this tested candidate after documentation and
+test-harness updates; release checksums cover the binary and matching sources.
+
 ## Ubuntu 0.1.0-1 package verification — 2026-10-20
 
 The amd64 package is built at `/opt/xfa-forms-linux` in a private mount namespace

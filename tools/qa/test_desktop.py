@@ -31,7 +31,7 @@ def call(destination, path, method, *args):
 
 
 class Desktop(unittest.TestCase):
-    def test_service_is_discoverable_before_launch(self):
+    def test_00_service_is_discoverable_before_launch(self):
         names, = call("org.freedesktop.DBus", "/org/freedesktop/DBus",
                       "org.freedesktop.DBus.ListActivatableNames")
         self.assertIn(SERVICE, names)
@@ -40,6 +40,11 @@ class Desktop(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xfa-desktop-document-") as temporary:
             source = Path(temporary) / "test form's document.pdf"
             source.write_bytes(data)
+            # GIO leaves apostrophes unescaped; pathlib.as_uri() does not.
+            # Query the same URI spelling that the viewer registers.
+            info = subprocess.check_output(["gio", "info", "-a", "standard::type", str(source)],
+                                           env=dict(os.environ, LC_ALL="C"), timeout=5).decode()
+            uri = next(line[5:] for line in info.splitlines() if line.startswith("uri: "))
             log = Path(temporary) / "viewer.log"
             with log.open("w") as output:
                 process = subprocess.Popen([LAUNCHER, str(source)], stdout=output, stderr=output)
@@ -49,7 +54,7 @@ class Desktop(unittest.TestCase):
                     while time.monotonic() < deadline:
                         self.assertIsNone(process.poll(), log.read_text())
                         owner, = call(SERVICE, OBJECT_PATH,
-                                      "org.gnome.Evince.Daemon.FindDocument", source.as_uri(), "false")
+                                      "org.gnome.Evince.Daemon.FindDocument", uri, "false")
                         if owner:
                             break
                         time.sleep(.1)
@@ -59,7 +64,7 @@ class Desktop(unittest.TestCase):
                                               stderr=subprocess.PIPE, timeout=10)
                     self.assertEqual(reopened.returncode, 0, reopened.stderr.decode())
                     same_owner, = call(SERVICE, OBJECT_PATH,
-                                           "org.gnome.Evince.Daemon.FindDocument", source.as_uri(), "false")
+                                           "org.gnome.Evince.Daemon.FindDocument", uri, "false")
                     self.assertEqual(same_owner, owner)
                     self.assertIsNone(process.poll())
                     self.assertNotIn("Error registering document", log.read_text())
