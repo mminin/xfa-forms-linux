@@ -187,12 +187,14 @@ def assemble(prefix, payload, files, info):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination, follow_symlinks=False)
     shutil.copytree(prefix / "lib/x86_64-linux-gnu/evince", installed / "lib/x86_64-linux-gnu/evince")
-    for name in ("glib-2.0", "icons", "locale", "dbus-1"):
+    for name in ("glib-2.0", "icons", "locale"):
         shutil.copytree(prefix / "share" / name, installed / "share" / name)
     put(payload, "usr/bin/xfa-forms-linux", launcher("bin/evince"), 0o755)
     put(payload, "usr/bin/xfa-pdf", launcher("bin/pdfxfa"), 0o755)
     put(installed, "bin/xfa-evinced", launcher("libexec/evinced"), 0o755)
-    service = installed / "share/dbus-1/services/org.gnome.Evince.Devel.Daemon.service"
+    service = installed / "share/dbus-1/services/org.gnome.Evince.XFA.Daemon.service"
+    service.parent.mkdir(parents=True)
+    shutil.copy2(prefix / "share/dbus-1/services/org.gnome.Evince.XFA.Daemon.service", service)
     service.write_text(re.sub(r"^Exec=.*$", f"Exec={PREFIX}/bin/xfa-evinced", service.read_text(), flags=re.M))
     put(payload, "usr/share/applications/org.gnome.Evince.XFA.desktop", '''[Desktop Entry]
 Type=Application
@@ -208,7 +210,7 @@ Categories=GNOME;GTK;Office;Viewer;
 ''')
     icon = payload / "usr/share/icons/hicolor/scalable/apps/org.gnome.Evince.XFA.svg"
     icon.parent.mkdir(parents=True)
-    shutil.copy2(prefix / "share/icons/hicolor/scalable/apps/org.gnome.Evince.Devel.svg", icon)
+    shutil.copy2(prefix / "share/icons/hicolor/scalable/apps/org.gnome.Evince.XFA.svg", icon)
     doc = payload / "usr/share/doc" / PACKAGE
     doc.mkdir(parents=True)
     for name in ("README.md", "RELEASE_NOTES.md", "KNOWN_ISSUES.md", "TESTING.md", "PR_PLAN.md", "UPSTREAM", "VERSION"):
@@ -314,6 +316,7 @@ def main():
                    "--unshare-pid", "--unshare-net", "--chdir", "/tmp/xfa-build",
                    "--setenv", "PATH", "/usr/bin:/bin", "--unsetenv", "LD_LIBRARY_PATH", "--unsetenv", "PKG_CONFIG_PATH",
                    "--unsetenv", "CMAKE_PREFIX_PATH", "--setenv", "XFA_INSTALL_PREFIX", str(PREFIX),
+                   "--setenv", "XFA_APPLICATION_ID", "org.gnome.Evince.XFA",
                    "--setenv", "JOBS", str(args.jobs), "--setenv", "XDG_CACHE_HOME", "/tmp/xfa-build/_work/cache",
                    "/bin/sh", "scripts/build.sh"]
         subprocess.run(command, check=True)

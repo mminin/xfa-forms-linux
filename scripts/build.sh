@@ -32,8 +32,12 @@ export LD_LIBRARY_PATH="$PREFIX/lib:$PREFIX/lib/x86_64-linux-gnu:$LD_LIBRARY_PAT
 
 if [ ! -d "$ROOT/_build/evince" ]; then
     meson setup "$ROOT/_build/evince" "$ROOT/upstream/evince" --prefix="$PREFIX" \
+        -Dapplication_id="${XFA_APPLICATION_ID:-}" \
         -Dprofile=devel -Dnautilus=false -Dintrospection=false -Dgtk_doc=false -Duser_doc=false \
         -Dps=disabled -Ddjvu=disabled -Ddvi=disabled -Dxps=disabled -Dcomics=disabled -Dtiff=disabled
+fi
+if [ -n "${XFA_APPLICATION_ID:-}" ]; then
+    meson setup --reconfigure "$ROOT/_build/evince" "$ROOT/upstream/evince" -Dapplication_id="$XFA_APPLICATION_ID"
 fi
 ninja -j "$JOBS" -C "$ROOT/_build/evince" install
 echo "built into $PREFIX"

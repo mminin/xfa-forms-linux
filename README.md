@@ -261,6 +261,7 @@ Evince (`patches/evince/`):
 | 0019 | Respect multiline character limits, including Unicode paste |
 | 0020 | Commit editable choices on focus-out and Enter |
 | 0021 | Commit active and pending editors before save, print, close or reload checks |
+| 0022 | Allow a separate application ID for the Ubuntu package and its desktop integration |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.

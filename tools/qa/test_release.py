@@ -143,6 +143,47 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(asset.read_bytes(), b"Earlier candidate")
         self.assertEqual(list(self.output.iterdir()), [asset])
 
+    def ubuntu_assets(self):
+        assets = Path(self.temp.name) / "ubuntu-assets"
+        assets.mkdir()
+        info = {"version": "0.1.0", "source_commit": self.git("rev-parse", "HEAD").decode().strip(),
+                "distribution": "Ubuntu 24.04", "architecture": "amd64",
+                "package": "xfa-forms-linux_0.1.0-1_amd64.deb",
+                "complete_source": "xfa-forms-linux-0.1.0-complete-source.tar.gz"}
+        for key in ("package", "complete_source"):
+            data = f"Fixture {key}\n".encode()
+            (assets / info[key]).write_bytes(data)
+            info[key + "_sha256"] = hashlib.sha256(data).hexdigest()
+        (assets / "ubuntu-build.json").write_text(json.dumps(info))
+        return assets, info
+
+    def test_matching_ubuntu_assets_are_checksummed(self):
+        assets, info = self.ubuntu_assets()
+        result = self.run_release("--ubuntu-assets", str(assets))
+        self.assertEqual(result.returncode, 0, result.stdout.decode())
+        manifest = json.loads((self.output / "release.json").read_text())
+        self.assertEqual(manifest["ubuntu"], info)
+        for key in ("package", "complete_source"):
+            self.assertEqual((self.output / info[key]).read_bytes(), (assets / info[key]).read_bytes())
+            self.assertIn(info[key], (self.output / "SHA256SUMS").read_text())
+
+    def test_ubuntu_assets_from_other_commit_are_rejected(self):
+        assets, info = self.ubuntu_assets()
+        info["source_commit"] = "0" * 40
+        (assets / "ubuntu-build.json").write_text(json.dumps(info))
+        result = self.run_release("--ubuntu-assets", str(assets))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must match this public commit", result.stdout.decode())
+        self.assertFalse(self.output.exists())
+
+    def test_modified_ubuntu_asset_is_rejected(self):
+        assets, info = self.ubuntu_assets()
+        (assets / info["package"]).write_bytes(b"modified package")
+        result = self.run_release("--ubuntu-assets", str(assets))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("checksum mismatch", result.stdout.decode())
+        self.assertFalse(self.output.exists())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

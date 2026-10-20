@@ -14,8 +14,10 @@ import unittest
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-PREFIX = ROOT / "_install"
-OUT = ROOT / "_work/qa/printing-regressions"
+PREFIX = Path(os.environ.get("XFA_TEST_PREFIX", ROOT / "_install"))
+OUT = Path(os.environ.get("XFA_QA_OUTPUT", ROOT / "_work/qa/printing-regressions"))
+DRIVER = Path(os.environ.get("XFA_TEST_PRINT_DRIVER", ROOT / "_work/tests/check-printing"))
+LAUNCHER = Path(os.environ.get("XFA_TEST_LAUNCHER", ROOT / "scripts/run-evince.sh"))
 
 
 def pdf(objects):
@@ -119,7 +121,7 @@ class Printing(unittest.TestCase):
         output.unlink(missing_ok=True)
         try:
             with (OUT / f"{name}.log").open("w") as log:
-                subprocess.run([str(ROOT / "_work/tests/check-printing"), action,
+                subprocess.run([str(DRIVER), action,
                                 str(self.xfa if xfa else self.ordinary), str(output)],
                                env=env, stdout=log, stderr=log, check=True, timeout=35)
             if action == "preview":
@@ -161,7 +163,7 @@ class Printing(unittest.TestCase):
                 settings.write_text("[Print Settings]\nprinter=Print to File\n")
                 try:
                     with (OUT / f"{name}.log").open("w") as log:
-                        subprocess.run([str(ROOT / "scripts/run-evince.sh"), "--preview", "--unlink-tempfile",
+                        subprocess.run([str(LAUNCHER), "--preview", "--unlink-tempfile",
                                         "--print-settings", str(settings), str(source)],
                                        env=env, stdout=log, stderr=log, check=True, timeout=10)
                     self.preview(token, xfa, name)
