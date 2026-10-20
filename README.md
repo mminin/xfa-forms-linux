@@ -98,6 +98,21 @@ here. They have no file or network access; a URL a form asks to open
 
 ## Build and try it (Ubuntu 24.04)
 
+The Ubuntu 24.04 amd64 release package can be installed with:
+
+```sh
+sudo apt install ./xfa-forms-linux_0.1.0-1_amd64.deb
+xfa-forms-linux document.pdf
+```
+
+It adds **Document Viewer (XFA)** and installs its own libraries under
+`/opt/xfa-forms-linux`. Existing PDF-default settings are left intact. Remove it
+with `sudo apt remove xfa-forms-linux`. `xfa-pdf` exposes the `pdfxfa` CLI.
+The complete source archive includes all upstream trees; follow its
+`BUILD_COMPLETE_SOURCE.md` to rebuild without fetching them.
+
+To build from the smaller patches-and-build-tools source package:
+
 ```sh
 sudo sh scripts/install-build-deps.sh   # build dependencies, once
 scripts/bootstrap.sh                    # fetch upstream sources and apply patches/

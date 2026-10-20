@@ -38,12 +38,37 @@ extraction before uploading it. Record the candidate's public commit and logs.
 Use an empty output directory for a changed candidate; existing differing release
 assets are never replaced.
 
+## Ubuntu package
+
+On Ubuntu 24.04 amd64, install the normal build dependencies plus `bubblewrap`,
+`dpkg-dev` and `binutils`. After a clean public bootstrap, run:
+
+```sh
+python3 scripts/build-ubuntu-package.py
+python3 scripts/prepare-release.py --ubuntu-assets _work/ubuntu-package/assets \
+    --output _work/releases/0.1.0-ubuntu
+```
+
+The builder compiles at a fixed `/opt/xfa-forms-linux` prefix inside a private
+mount namespace. It writes only to its work directory, strips runtime binaries,
+calculates dependencies with
+[`dpkg-shlibdeps`](https://manpages.debian.org/bookworm/dpkg-dev/dpkg-shlibdeps.1.en.html),
+and packages the private libraries with the viewer and desktop launcher. It also
+exports the exact complete source with a per-file manifest, including QuickJS and
+Zint. A complete source extraction can run the same builder without a Git checkout.
+
+Test installation, ordinary PDFs, XFA forms, printing and removal in a clean
+Ubuntu 24.04 container before publishing. Verify all release checksums and ship
+the complete source alongside the binary. The combined release manifest rejects
+binaries built from another public commit or altered assets.
+
 ## Publication
 
 Once the candidate and destination are approved, create an annotated `v0.1.0` tag
 on the public commit recorded in `release.json`. Publish from the public
 repository, mark the release as experimental/prerelease, use `RELEASE_NOTES.md`
-as its description, and attach the tarball, `release.json` and `SHA256SUMS`.
+as its description, and attach both source archives, the Ubuntu `.deb`,
+`release.json` and `SHA256SUMS`.
 
 No remote hosting destination is configured in the prepared local repository.
 Choosing that destination and publishing are separate from preparing these assets.

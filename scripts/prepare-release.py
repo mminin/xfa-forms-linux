@@ -90,7 +90,7 @@ def inspect():
     return version, files, patches, upstream
 
 
-def prepare(output=None, check=False):
+def prepare(output=None, check=False, ubuntu_assets=None):
     version, files, patches, upstream = inspect()
     commit = git("rev-parse", "HEAD").decode().strip()
     if check:
@@ -113,8 +113,24 @@ def prepare(output=None, check=False):
         "patches": {key: len(value) for key, value in patches.items()},
         "upstream": upstream,
     }
-    assets = {name: payload, "release.json": (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
-              "RELEASE_NOTES.md": files["RELEASE_NOTES.md"]}
+    assets = {name: payload, "RELEASE_NOTES.md": files["RELEASE_NOTES.md"]}
+    if ubuntu_assets:
+        binary = json.loads((ubuntu_assets / "ubuntu-build.json").read_text())
+        if (binary.get("source_commit") != commit or binary.get("version") != version
+                or binary.get("distribution") != "Ubuntu 24.04" or binary.get("architecture") != "amd64"):
+            raise ValueError("Ubuntu assets must match this public commit, version and target")
+        expected = {"package": f"{PROJECT}_{version}-1_amd64.deb",
+                    "complete_source": f"{PROJECT}-{version}-complete-source.tar.gz"}
+        for key, filename in expected.items():
+            path = ubuntu_assets / filename
+            if binary.get(key) != filename or path.is_symlink():
+                raise ValueError("unexpected Ubuntu asset path")
+            data = path.read_bytes()
+            if hashlib.sha256(data).hexdigest() != binary[key + "_sha256"]:
+                raise ValueError(f"Ubuntu asset checksum mismatch: {filename}")
+            assets[filename] = data
+        manifest["ubuntu"] = binary
+    assets["release.json"] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     assets["SHA256SUMS"] = "".join(f"{hashlib.sha256(data).hexdigest()}  {path}\n"
                                   for path, data in sorted(assets.items())).encode()
     output.mkdir(parents=True, exist_ok=True)
@@ -135,10 +151,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="asset directory (default: _work/releases/VERSION)")
     parser.add_argument("--check", action="store_true", help="validate source without writing assets")
+    parser.add_argument("--ubuntu-assets", type=Path, help="include matching .deb and complete source from the Ubuntu builder")
     args = parser.parse_args()
     try:
-        prepare(args.output, args.check)
-    except (ValueError, subprocess.CalledProcessError) as error:
+        prepare(args.output, args.check, args.ubuntu_assets)
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"release preparation failed: {error}\n")
 
 

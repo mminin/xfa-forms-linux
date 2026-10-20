@@ -3,7 +3,7 @@
 # Then run the patched viewer with: scripts/run-evince.sh samples/consent-letter-2123.pdf
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PREFIX="$ROOT/_install"
+PREFIX=${XFA_INSTALL_PREFIX:-$ROOT/_install}
 JOBS=${JOBS:-4}
 case "$JOBS" in ''|*[!0-9]*|0*) echo "JOBS must be a positive integer without leading zeros" >&2; exit 1 ;; esac
 

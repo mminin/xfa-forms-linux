@@ -1,6 +1,6 @@
 # XFA forms in Evince 0.1.0
 
-First experimental source release of the Poppler and Evince patches for opening,
+First experimental release of the Poppler and Evince patches for opening,
 editing, saving and printing dynamic XFA forms on Linux. The release contains
 47 Poppler patches, 21 Evince patches, build scripts and regression tools.
 
@@ -17,12 +17,21 @@ editing, saving and printing dynamic XFA forms on Linux. The release contains
 
 ## Installation
 
-This is a patches-and-build-tools source package. Building requires network
+An installable `xfa-forms-linux_0.1.0-1_amd64.deb` is provided for Ubuntu 24.04.
+Install it with `sudo apt install ./xfa-forms-linux_0.1.0-1_amd64.deb`, then open
+**Document Viewer (XFA)** or run `xfa-forms-linux document.pdf`. The viewer and
+private libraries live under `/opt/xfa-forms-linux`; existing PDF-default settings
+are left intact. Remove it with `sudo apt remove xfa-forms-linux`.
+
+The release also includes a complete source archive with all four upstream trees
+and the applied patches. Its build instructions require no upstream source fetch.
+
+The smaller patches-and-build-tools source package requires network
 access to fetch four upstream projects at the revisions in `UPSTREAM`. The
 documented and tested target is Ubuntu 24.04 on x86-64, with GCC 13, CMake 3.28 or
 later, GTK 4 and libadwaita. See [README.md](README.md) for the commands.
 
-The build installs into `_install/` inside the source directory. Start it through
+The source build installs into `_install/` inside the source directory. Start it through
 `scripts/run-evince.sh`; the launcher selects the matching libraries and preview
 helper. Desktop integration and becoming the default PDF viewer are optional.
 Keep the source directory in place after building: the installation uses its
