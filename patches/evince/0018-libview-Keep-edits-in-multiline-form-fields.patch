@@ -1,0 +1,171 @@
+From b11a0e4deda9706252f171d91c3c5abc40b1f007 Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Mon, 19 Oct 2026 17:37:17 -0700
+Subject: [PATCH] libview: Keep edits in multiline form fields
+
+Multiline editors are GtkTextViews, which do not implement GtkEditable or emit changed. Load and observe their GtkTextBuffer so focus-out commits entered text, and refresh that buffer after a deferred save. Wrap text and let Tab leave the editor.
+
+Compare field text case-sensitively so capitalization-only edits are saved too, and release unchanged text.
+
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ libview/ev-view.c | 82 ++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 59 insertions(+), 23 deletions(-)
+
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index b33fc09..9aab4b5 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -2538,7 +2538,7 @@ typedef struct {
+ 
+ static void ev_view_form_field_text_save (EvView *view, GtkWidget *widget);
+ static void ev_view_form_field_choice_save (EvView *view, GtkWidget *widget);
+-static void ev_view_form_field_text_changed (GtkWidget *widget, EvFormField *field);
++static void ev_view_form_field_text_changed (GObject *object, EvFormField *field);
+ 
+ static EvViewFormEditorAction *
+ ev_view_form_editor_action_new (GtkWidget *widget, EvView *view, gboolean remove)
+@@ -2565,26 +2565,53 @@ ev_view_refresh_form_editors (EvView *view)
+ 	     child = gtk_widget_get_next_sibling (child)) {
+ 		EvFormField *field = g_object_get_data (G_OBJECT (child), "form-field");
+ 		g_autofree gchar *text = NULL;
++		g_autofree gchar *buffer_text = NULL;
++		GtkTextBuffer *buffer = NULL;
++		GObject *source = G_OBJECT (child);
+ 		const gchar *shown;
+ 		gint start, end;
+ 		gboolean all_selected;
+ 
+-		if (!EV_IS_FORM_FIELD_TEXT (field) || field->changed || !GTK_IS_EDITABLE (child) ||
++		if (!EV_IS_FORM_FIELD_TEXT (field) || field->changed ||
++		    (!GTK_IS_EDITABLE (child) && !GTK_IS_TEXT_VIEW (child)) ||
+ 		    g_object_get_data (G_OBJECT (child), "form-document") != priv->document)
+ 			continue;
+ 
+ 		text = ev_document_forms_form_field_text_get_text (EV_DOCUMENT_FORMS (priv->document), field);
+-		shown = gtk_editable_get_text (GTK_EDITABLE (child));
++		if (GTK_IS_TEXT_VIEW (child)) {
++			GtkTextIter first, last;
++
++			buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (child));
++			source = G_OBJECT (buffer);
++			gtk_text_buffer_get_bounds (buffer, &first, &last);
++			buffer_text = gtk_text_buffer_get_text (buffer, &first, &last, FALSE);
++			shown = buffer_text;
++			all_selected = gtk_text_buffer_get_selection_bounds (buffer, &first, &last) &&
++				       gtk_text_iter_get_offset (&first) == 0 &&
++				       gtk_text_iter_get_offset (&last) == gtk_text_buffer_get_char_count (buffer);
++		} else {
++			shown = gtk_editable_get_text (GTK_EDITABLE (child));
++			all_selected = gtk_editable_get_selection_bounds (GTK_EDITABLE (child), &start, &end) &&
++				       start == 0 && end == g_utf8_strlen (shown, -1);
++		}
+ 		if (g_strcmp0 (text ? text : "", shown) == 0)
+ 			continue;
+ 
+-		all_selected = gtk_editable_get_selection_bounds (GTK_EDITABLE (child), &start, &end) &&
+-			       start == 0 && end == g_utf8_strlen (shown, -1);
+-		g_signal_handlers_block_by_func (child, ev_view_form_field_text_changed, field);
+-		gtk_editable_set_text (GTK_EDITABLE (child), text ? text : "");
+-		g_signal_handlers_unblock_by_func (child, ev_view_form_field_text_changed, field);
+-		if (all_selected)
+-			gtk_editable_select_region (GTK_EDITABLE (child), 0, -1);
++		g_signal_handlers_block_by_func (source, ev_view_form_field_text_changed, field);
++		if (buffer) {
++			gtk_text_buffer_set_text (buffer, text ? text : "", -1);
++			if (all_selected) {
++				GtkTextIter first, last;
++
++				gtk_text_buffer_get_bounds (buffer, &first, &last);
++				gtk_text_buffer_select_range (buffer, &first, &last);
++			}
++		} else {
++			gtk_editable_set_text (GTK_EDITABLE (child), text ? text : "");
++			if (all_selected)
++				gtk_editable_select_region (GTK_EDITABLE (child), 0, -1);
++		}
++		g_signal_handlers_unblock_by_func (source, ev_view_form_field_text_changed, field);
+ 		g_free (EV_FORM_FIELD_TEXT (field)->text);
+ 		EV_FORM_FIELD_TEXT (field)->text = g_steal_pointer (&text);
+ 	}
+@@ -3266,28 +3293,28 @@ ev_view_form_field_text_save (EvView    *view,
+ }
+ 
+ static void
+-ev_view_form_field_text_changed (GtkWidget   *widget,
++ev_view_form_field_text_changed (GObject     *object,
+ 				 EvFormField *field)
+ {
+ 	EvFormFieldText *field_text = EV_FORM_FIELD_TEXT (field);
+ 	gchar           *text = NULL;
+ 
+-	if (GTK_IS_ENTRY (widget)) {
+-		text = g_strdup (gtk_editable_get_text (GTK_EDITABLE (widget)));
+-	} else if (GTK_IS_TEXT_BUFFER (widget)) {
++	if (GTK_IS_EDITABLE (object)) {
++		text = g_strdup (gtk_editable_get_text (GTK_EDITABLE (object)));
++	} else if (GTK_IS_TEXT_BUFFER (object)) {
+ 		GtkTextIter start, end;
+ 
+-		gtk_text_buffer_get_bounds (GTK_TEXT_BUFFER (widget), &start, &end);
+-		text = gtk_text_buffer_get_text (GTK_TEXT_BUFFER (widget),
++		gtk_text_buffer_get_bounds (GTK_TEXT_BUFFER (object), &start, &end);
++		text = gtk_text_buffer_get_text (GTK_TEXT_BUFFER (object),
+ 						 &start, &end, FALSE);
+ 	}
+ 
+-	if (!field_text->text ||
+-	    (field_text->text && g_ascii_strcasecmp (field_text->text, text) != 0)) {
++	if (g_strcmp0 (field_text->text, text) != 0) {
+ 		g_free (field_text->text);
+ 		field_text->text = text;
+ 		field->changed = TRUE;
+-	}
++	} else
++		g_free (text);
+ }
+ 
+ static void
+@@ -3319,6 +3346,7 @@ ev_view_form_field_text_create_widget (EvView      *view,
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
+ 	EvFormFieldText *field_text = EV_FORM_FIELD_TEXT (field);
+ 	GtkWidget       *text = NULL;
++	GObject         *source;
+ 	gchar           *txt;
+ 	GtkStyleContext *context;
+ 	GtkEventController *controller;
+@@ -3346,16 +3374,24 @@ ev_view_form_field_text_create_widget (EvView      *view,
+ 			break;
+ 	        case EV_FORM_FIELD_TEXT_MULTILINE: {
+ 			text = gtk_text_view_new ();
++			gtk_text_view_set_wrap_mode (GTK_TEXT_VIEW (text), GTK_WRAP_WORD_CHAR);
++			gtk_text_view_set_accepts_tab (GTK_TEXT_VIEW (text), FALSE);
+ 		}
+ 			break;
+ 	}
+ 
+-	if (txt) {
+-		gtk_editable_set_text (GTK_EDITABLE (text), txt);
+-		g_free (txt);
++	if (GTK_IS_TEXT_VIEW (text)) {
++		GtkTextBuffer *buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (text));
++
++		source = G_OBJECT (buffer);
++		gtk_text_buffer_set_text (buffer, txt ? txt : "", -1);
++	} else {
++		source = G_OBJECT (text);
++		gtk_editable_set_text (GTK_EDITABLE (text), txt ? txt : "");
+ 	}
++	g_free (txt);
+ 
+-	g_signal_connect (text, "changed",
++	g_signal_connect (source, "changed",
+ 				G_CALLBACK (ev_view_form_field_text_changed),
+ 				field);
+ 
+-- 
+2.43.0
+

@@ -477,13 +477,9 @@ static const char *tab_xdp =
     "<subform name=\"form1\" layout=\"tb\">"
     "<pageSet><pageArea name=\"Page1\"><contentArea x=\"1in\" y=\"1in\" w=\"6in\" h=\"9in\"/>"
     "<medium short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
-    "<field name=\"a\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui><value><text>first</text></value></field>"
+    "<field name=\"a\" w=\"3in\" h=\"0.4in\"><ui><textEdit%s/></ui><value><text>first</text></value></field>"
     "</subform></template></xdp:xdp>";
 
-/* Tab saves the field being left only once GTK has finished moving the focus.
- * With a single field, Tab comes back to it and opens its editor before the
- * new value is saved, and the form needs no new layout. The editor must then
- * show the saved value, not the one it opened with. */
 /* Ctrl+wheel zooms in the view's scroll controller. A GTK 4 scroll controller
  * without axes never emits scroll, so the zoom silently stopped working. */
 static void test_ctrl_wheel_zoom (void)
@@ -507,9 +503,19 @@ static void test_ctrl_wheel_zoom (void)
     g_object_unref (view);
 }
 
-static void test_tab_refresh (void)
+static GtkWidget *find_text_view (GtkWidget *widget);
+static gchar *text_view_text (GtkWidget *widget);
+
+/* Tab saves the field being left only once GTK has finished moving the focus.
+ * With a single field, Tab comes back to it and opens its editor before the
+ * new value is saved, and the form needs no new layout. The editor must then
+ * show the saved value, not the one it opened with. */
+static void test_tab_refresh (gconstpointer data)
 {
-    gchar *path = write_fixture_xdp (tab_xdp);
+    gboolean multiline = GPOINTER_TO_INT (data);
+    gchar *fixture = g_strdup_printf (tab_xdp, multiline ? " multiLine=\"1\"" : "");
+    gchar *path = write_fixture_xdp (fixture);
+    g_free (fixture);
     gchar *uri = g_filename_to_uri (path, NULL, NULL);
     GError *error = NULL;
     EvDocument *document = ev_document_factory_get_document (uri, &error);
@@ -529,28 +535,150 @@ static void test_tab_refresh (void)
     GtkWidget *entry = NULL;
     for (int i = 0; i < 500 && !entry; ++i) {
         while (g_main_context_iteration (NULL, FALSE)) { }
-        entry = find_entry (view);
-        if (!entry || g_strcmp0 (gtk_editable_get_text (GTK_EDITABLE (entry)), "first") != 0) {
+        entry = multiline ? find_text_view (view) : find_entry (view);
+        gchar *shown = entry ? (multiline ? text_view_text (entry) :
+            g_strdup (gtk_editable_get_text (GTK_EDITABLE (entry)))) : NULL;
+        if (g_strcmp0 (shown, "first") != 0) {
             gtk_widget_child_focus (view, GTK_DIR_TAB_FORWARD);
             entry = NULL;
             g_usleep (10000);
         }
+        g_free (shown);
     }
     g_assert_nonnull (entry);
-    gtk_editable_set_text (GTK_EDITABLE (entry), "copied");
+    if (multiline)
+        gtk_text_buffer_set_text (gtk_text_view_get_buffer (GTK_TEXT_VIEW (entry)), "copied", -1);
+    else
+        gtk_editable_set_text (GTK_EDITABLE (entry), "copied");
     gtk_widget_child_focus (window, GTK_DIR_TAB_FORWARD);
 
     GtkWidget *next = NULL;
     for (int i = 0; i < 300; ++i) {
         while (g_main_context_iteration (NULL, FALSE)) { }
-        next = find_entry (view);
-        if (next && next != entry && g_strcmp0 (gtk_editable_get_text (GTK_EDITABLE (next)), "copied") == 0)
+        next = multiline ? find_text_view (view) : find_entry (view);
+        gchar *shown = next ? (multiline ? text_view_text (next) :
+            g_strdup (gtk_editable_get_text (GTK_EDITABLE (next)))) : NULL;
+        gboolean refreshed = next && next != entry && g_strcmp0 (shown, "copied") == 0;
+        g_free (shown);
+        if (refreshed)
             break;
         g_usleep (10000);
     }
     g_assert_nonnull (next);
     g_assert_true (next != entry);
-    g_assert_cmpstr (gtk_editable_get_text (GTK_EDITABLE (next)), ==, "copied");
+    gchar *shown = multiline ? text_view_text (next) : g_strdup (gtk_editable_get_text (GTK_EDITABLE (next)));
+    g_assert_cmpstr (shown, ==, "copied");
+    g_free (shown);
+
+    gtk_window_destroy (GTK_WINDOW (window));
+    g_object_unref (window);
+    g_object_unref (model);
+    g_unlink (path);
+    g_free (uri);
+    g_free (path);
+}
+
+static GtkWidget *find_text_view (GtkWidget *widget)
+{
+    if (GTK_IS_TEXT_VIEW (widget))
+        return widget;
+    for (GtkWidget *child = gtk_widget_get_first_child (widget); child;
+         child = gtk_widget_get_next_sibling (child)) {
+        GtkWidget *text = find_text_view (child);
+        if (text)
+            return text;
+    }
+    return NULL;
+}
+
+static gchar *text_view_text (GtkWidget *widget)
+{
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (widget));
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds (buffer, &start, &end);
+    return gtk_text_buffer_get_text (buffer, &start, &end, FALSE);
+}
+
+/* IRCC name fields are multiline even when the answer fits on one line.
+ * Exercise their real editor, focus-out save, XFA rerender and reopening. */
+static void test_multiline_editor (void)
+{
+    const char *multiline_xdp =
+        "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
+        "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\">"
+        "<subform name=\"form1\" layout=\"tb\">"
+        "<pageSet><pageArea><contentArea x=\"1in\" y=\"1in\" w=\"6in\" h=\"9in\"/>"
+        "<medium short=\"8.5in\" long=\"11in\"/></pageArea></pageSet>"
+        "<field name=\"name\" w=\"3in\" h=\"0.8in\"><ui><textEdit multiLine=\"1\"/></ui>"
+        "<assist><toolTip>name</toolTip></assist><value><text>Original</text></value>"
+        "<event activity=\"exit\"><script contentType=\"application/x-javascript\">"
+        "out.rawValue=this.rawValue;</script></event></field>"
+        "<field name=\"out\" w=\"3in\" h=\"0.8in\" access=\"nonInteractive\"><ui><textEdit/></ui></field>"
+        "</subform></template></xdp:xdp>";
+    gchar *path = write_fixture_xdp (multiline_xdp);
+    gchar *uri = g_filename_to_uri (path, NULL, NULL);
+    GError *error = NULL;
+    EvDocument *document = ev_document_factory_get_document (uri, &error);
+    g_assert_no_error (error);
+    EvDocumentModel *model = ev_document_model_new ();
+    GtkWidget *view = GTK_WIDGET (ev_view_new ());
+    GtkWidget *window = gtk_window_new ();
+    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *button = gtk_button_new_with_label ("Leave the field");
+    g_object_ref_sink (window);
+    gtk_window_set_default_size (GTK_WINDOW (window), 800, 900);
+    ev_document_model_set_document (model, document);
+    ev_view_set_model (EV_VIEW (view), model);
+    g_object_unref (document);
+    gtk_widget_set_vexpand (view, TRUE);
+    gtk_box_append (GTK_BOX (box), view);
+    gtk_box_append (GTK_BOX (box), button);
+    gtk_window_set_child (GTK_WINDOW (window), box);
+    gtk_window_present (GTK_WINDOW (window));
+
+    const char *expected[] = { "Original", "Jane\nDoe", "jane\nDoe", "" };
+    for (guint round = 0; round < G_N_ELEMENTS (expected); ++round) {
+        GtkWidget *editor = NULL;
+        for (int i = 0; i < 500 && !editor; ++i) {
+            while (g_main_context_iteration (NULL, FALSE)) { }
+            editor = find_text_view (view);
+            if (!editor) {
+                gtk_widget_child_focus (view, GTK_DIR_TAB_FORWARD);
+                g_usleep (10000);
+            }
+        }
+        g_assert_nonnull (editor);
+        gchar *shown = text_view_text (editor);
+        g_assert_cmpstr (shown, ==, round ? expected[round - 1] : "Original");
+        g_free (shown);
+        g_assert_false (gtk_text_view_get_accepts_tab (GTK_TEXT_VIEW (editor)));
+        gtk_text_buffer_set_text (gtk_text_view_get_buffer (GTK_TEXT_VIEW (editor)), expected[round], -1);
+        document = g_object_ref (ev_document_model_get_document (model));
+        gtk_widget_grab_focus (button);
+        for (int i = 0; i < 500; ++i) {
+            while (g_main_context_iteration (NULL, FALSE)) { }
+            if (round == 0 || ev_document_model_get_document (model) != document)
+                break;
+            g_usleep (10000);
+        }
+        if (round)
+            g_assert_true (ev_document_model_get_document (model) != document);
+        g_object_unref (document);
+        document = ev_document_model_get_document (model);
+        EvFormField *field = find_field (document, "name");
+        gchar *saved = ev_document_forms_form_field_text_get_text (EV_DOCUMENT_FORMS (document), field);
+        g_assert_cmpstr (saved ? saved : "", ==, expected[round]);
+        g_free (saved);
+        g_object_unref (field);
+        if (round) {
+            EvPage *page = ev_document_get_page (document, 0);
+            gchar *text = ev_document_text_get_text (EV_DOCUMENT_TEXT (document), page);
+            g_assert_true (round == 3 || strstr (text, round == 1 ? "Jane" : "jane") != NULL);
+            g_free (text);
+            g_object_unref (page);
+        }
+        gtk_widget_grab_focus (view);
+    }
 
     gtk_window_destroy (GTK_WINDOW (window));
     g_object_unref (window);
@@ -568,8 +696,10 @@ int main (int argc, char **argv)
     g_test_add_func ("/view/xfa-dialogs", test_dialogs);
     g_test_add_func ("/view/editor-document-change", test_editor_document_change);
     g_test_add_func ("/view/launch-url", test_launch_url);
-    g_test_add_func ("/view/tab-refresh", test_tab_refresh);
+    g_test_add_data_func ("/view/tab-refresh", GINT_TO_POINTER (FALSE), test_tab_refresh);
+    g_test_add_data_func ("/view/multiline-tab-refresh", GINT_TO_POINTER (TRUE), test_tab_refresh);
     g_test_add_func ("/view/ctrl-wheel-zoom", test_ctrl_wheel_zoom);
+    g_test_add_func ("/view/multiline-editor", test_multiline_editor);
     int result = g_test_run ();
     ev_shutdown ();
     return result;

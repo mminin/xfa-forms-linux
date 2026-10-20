@@ -2,7 +2,7 @@
 
 What still needs fixing in the XFA patch set, and why. This is the developer-facing
 list; the user-facing "Known gaps" in [README.md](README.md) is a shorter summary.
-Last reviewed 2026-10-19 (after the CPT121 report).
+Last reviewed 2026-10-19 (after the IMM 1295 editing report).
 
 Items are grouped and tagged with a rough priority: **P1** (fix before a serious
 upstream proposal), **P2** (should fix), **P3** (nice to have / documented limitation).
@@ -111,6 +111,16 @@ the 357 rotated objects in the corpus are all draws and fields.
   sat on the rule above them; the render cache shows Acrobat keeps it (poppler 0039).
 - Ctrl+wheel did not zoom: the view's GTK 4 scroll controller had no axes, an
   upstream bug of the port (Evince 0017).
+- Multiline text disappeared on leaving a field, including IMM 1295's name
+  fields. The GTK 4 editor loaded values through `GtkEditable` and connected
+  `changed` to `GtkTextView`, although multiline text belongs to its
+  `GtkTextBuffer`. Loading, change tracking and deferred-save refresh now use
+  the buffer; Tab moves to the next field and text wraps. Capitalization-only
+  edits are also saved instead of being treated as unchanged (Evince 0018).
+  GUI regressions cover multiline loading, editing, clearing, exit scripts,
+  redraws, reopening and Tab refresh; the actual IMM 1295 page 3 field was
+  checked interactively, saved to a separate PDF and reopened with its value
+  retained in both the widget and reusable XFA state.
 
 - Verified before publishing (2026-10-19): a fresh clone of the public tree runs
   `scripts/bootstrap.sh` and `scripts/build.sh` from scratch, Zint included, and
