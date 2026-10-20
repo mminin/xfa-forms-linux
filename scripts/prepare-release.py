@@ -119,7 +119,10 @@ def prepare(output=None, check=False, ubuntu_assets=None):
         if (binary.get("source_commit") != commit or binary.get("version") != version
                 or binary.get("distribution") != "Ubuntu 24.04" or binary.get("architecture") != "amd64"):
             raise ValueError("Ubuntu assets must match this public commit, version and target")
-        expected = {"package": f"{PROJECT}_{version}-1_amd64.deb",
+        revision = binary.get("debian_revision", "1")
+        if not isinstance(revision, str) or not re.fullmatch(r"[1-9][0-9]*", revision):
+            raise ValueError("Ubuntu package revision must be a positive integer")
+        expected = {"package": f"{PROJECT}_{version}-{revision}_amd64.deb",
                     "complete_source": f"{PROJECT}-{version}-complete-source.tar.gz"}
         for key, filename in expected.items():
             path = ubuntu_assets / filename

@@ -62,6 +62,17 @@ Ubuntu 24.04 container before publishing. Verify all release checksums and ship
 the complete source alongside the binary. The combined release manifest rejects
 binaries built from another public commit or altered assets.
 
+Run `python3 tools/qa/test_desktop.py` against the installed package on a private
+display. It starts its own bus with standard system data paths, checks service
+discovery and registers/reopens ordinary and XFA documents. Do not export the
+private prefix into the bus's `XDG_DATA_DIRS`: doing so masks missing system
+activation files. `gdbus` is provided by the QA dependency `libglib2.0-bin`.
+Run the GUI suite on X11 with `libxtst6` available to exercise held mouse clicks;
+that check reports a skip on other backends.
+
+Package revisions are recorded as `debian_revision` in `ubuntu-build.json` and
+the combined release manifest. Use a new output directory for revised candidates.
+
 `python3 tools/qa/test_ubuntu_package.py` checks complete-source integrity;
 `python3 tools/qa/test_release.py` also checks binary/source asset association.
 The printing driver accepts `XFA_TEST_PREFIX`, `XFA_TEST_LAUNCHER` and

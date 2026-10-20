@@ -22,6 +22,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = Path("/opt/xfa-forms-linux")
 PACKAGE = "xfa-forms-linux"
+DEBIAN_REVISION = "2"
 PROJECTS = ("quickjs", "zint", "poppler", "evince")
 
 
@@ -192,8 +193,10 @@ def assemble(prefix, payload, files, info):
     put(payload, "usr/bin/xfa-forms-linux", launcher("bin/evince"), 0o755)
     put(payload, "usr/bin/xfa-pdf", launcher("bin/pdfxfa"), 0o755)
     put(installed, "bin/xfa-evinced", launcher("libexec/evinced"), 0o755)
-    service = installed / "share/dbus-1/services/org.gnome.Evince.XFA.Daemon.service"
-    service.parent.mkdir(parents=True)
+    # The session bus is already running before the launcher changes
+    # XDG_DATA_DIRS. Its activation files must be discoverable globally.
+    service = payload / "usr/share/dbus-1/services/org.gnome.Evince.XFA.Daemon.service"
+    service.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(prefix / "share/dbus-1/services/org.gnome.Evince.XFA.Daemon.service", service)
     service.write_text(re.sub(r"^Exec=.*$", f"Exec={PREFIX}/bin/xfa-evinced", service.read_text(), flags=re.M))
     put(payload, "usr/share/applications/org.gnome.Evince.XFA.desktop", '''[Desktop Entry]
@@ -236,7 +239,7 @@ Categories=GNOME;GTK;Office;Viewer;
 def package(payload, elf, output, info):
     control_dir = payload / "DEBIAN"
     control_dir.mkdir()
-    version = info["version"] + "-1"
+    version = info["version"] + "-" + DEBIAN_REVISION
     with tempfile.TemporaryDirectory(prefix="dependency-", dir=output) as temporary:
         temporary = Path(temporary)
         (temporary / "debian").mkdir()
@@ -328,7 +331,7 @@ def main():
             binary = package(payload, elf, output, info)
         full_source = output / f"{PACKAGE}-{info['version']}-complete-source.tar.gz"
         complete_source(full_source, files, info)
-        result = {"version": info["version"], "source_commit": info["source_commit"],
+        result = {"version": info["version"], "debian_revision": DEBIAN_REVISION, "source_commit": info["source_commit"],
                   "distribution": "Ubuntu 24.04", "architecture": "amd64",
                   "package": binary.name, "package_sha256": digest(binary.read_bytes()),
                   "complete_source": full_source.name, "complete_source_sha256": digest(full_source.read_bytes())}

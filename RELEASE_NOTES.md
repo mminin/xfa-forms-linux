@@ -2,7 +2,7 @@
 
 First experimental release of the Poppler and Evince patches for opening,
 editing, saving and printing dynamic XFA forms on Linux. The release contains
-47 Poppler patches, 22 Evince patches, build scripts and regression tools.
+47 Poppler patches, 23 Evince patches, build scripts and regression tools.
 
 ## Features
 
@@ -17,11 +17,15 @@ editing, saving and printing dynamic XFA forms on Linux. The release contains
 
 ## Installation
 
-An installable `xfa-forms-linux_0.1.0-1_amd64.deb` is provided for Ubuntu 24.04.
-Install it with `sudo apt install ./xfa-forms-linux_0.1.0-1_amd64.deb`, then open
+An installable `xfa-forms-linux_0.1.0-2_amd64.deb` is provided for Ubuntu 24.04.
+Install it with `sudo apt install ./xfa-forms-linux_0.1.0-2_amd64.deb`, then open
 **Document Viewer (XFA)** or run `xfa-forms-linux document.pdf`. The viewer and
 private libraries live under `/opt/xfa-forms-linux`; existing PDF-default settings
 are left intact. Remove it with `sudo apt remove xfa-forms-linux`.
+
+Package revision 2 fixes document-registration service discovery in existing
+desktop sessions and GTK active-state warnings when opening form dropdowns with
+the mouse. It upgrades revision 1 through the same install command.
 
 The release also includes a complete source archive with all four upstream trees
 and the applied patches. Its build instructions require no upstream source fetch.

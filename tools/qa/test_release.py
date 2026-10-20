@@ -176,6 +176,26 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("must match this public commit", result.stdout.decode())
         self.assertFalse(self.output.exists())
 
+    def test_revised_ubuntu_package_is_checksummed(self):
+        assets, info = self.ubuntu_assets()
+        revised = "xfa-forms-linux_0.1.0-2_amd64.deb"
+        (assets / info["package"]).rename(assets / revised)
+        info.update(package=revised, debian_revision="2")
+        (assets / "ubuntu-build.json").write_text(json.dumps(info))
+        result = self.run_release("--ubuntu-assets", str(assets))
+        self.assertEqual(result.returncode, 0, result.stdout.decode())
+        self.assertIn(revised, (self.output / "SHA256SUMS").read_text())
+
+    def test_invalid_ubuntu_revision_is_rejected(self):
+        assets, info = self.ubuntu_assets()
+        for revision in ("../2", "0", "02", 2):
+            info["debian_revision"] = revision
+            (assets / "ubuntu-build.json").write_text(json.dumps(info))
+            result = self.run_release("--ubuntu-assets", str(assets))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("revision must be", result.stdout.decode())
+        self.assertFalse(self.output.exists())
+
     def test_modified_ubuntu_asset_is_rejected(self):
         assets, info = self.ubuntu_assets()
         (assets / info["package"]).write_bytes(b"modified package")

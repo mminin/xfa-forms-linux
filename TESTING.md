@@ -1,5 +1,22 @@
 # Editing and printing audits
 
+## Ubuntu revision 2 follow-up — 2026-10-20
+
+Revision 1's launcher smoke tests inherited the private data path in the session
+bus and did not check registration errors. A fresh bus using only standard data
+paths reproduces the missing `org.gnome.Evince.XFA.Daemon` service. Revision 2
+installs its activation file under `/usr/share/dbus-1/services`; its daemon still
+runs through the private library wrapper. `tools/qa/test_desktop.py` checks service
+discovery before launching, registration and reopening for ordinary and XFA PDFs.
+
+Real mouse presses held across GTK frames also reproduce active-state warnings
+when a form dropdown is created beneath the pointer. Evince 0023 activates that
+editor on release and cancels activation when released elsewhere. The expanded
+16-check GUI suite passes on an isolated X11 display, including keyboard opening,
+three held-click/selection cycles and drag-away cancellation. This new regression
+fails against revision 1. Six complete-source and 16 release-asset tests pass,
+including package-revision validation and checksums for revised assets.
+
 ## Ubuntu 0.1.0-1 package verification — 2026-10-20
 
 The amd64 package is built at `/opt/xfa-forms-linux` in a private mount namespace

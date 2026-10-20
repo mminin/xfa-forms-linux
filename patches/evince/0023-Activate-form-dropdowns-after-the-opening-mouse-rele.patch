@@ -1,0 +1,109 @@
+From cc4d44caeb2c7b42949572cb13dc846c13cf7cba Mon Sep 17 00:00:00 2001
+From: mminin <mminin2010@gmail.com>
+Date: Tue, 20 Oct 2026 11:33:34 -0700
+Subject: [PATCH] Activate form dropdowns after the opening mouse release
+
+Keep the original pointer target until the click finishes. Creating a combo box during the press and popping it up on the next frame makes GTK decrement active state on children that never received that press. Retain the field and document for the release, cancel when released away, and discard stale document targets.
+
+Assisted-by: OpenAI Codex
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+---
+ libview/ev-view-private.h |  2 ++
+ libview/ev-view.c         | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/libview/ev-view-private.h b/libview/ev-view-private.h
+index dc7ee6d..73890c7 100644
+--- a/libview/ev-view-private.h
++++ b/libview/ev-view-private.h
+@@ -199,6 +199,8 @@ typedef struct _EvViewPrivate {
+ 
+ 	/* Common for button press handling */
+ 	int pressed_button;
++	EvFormField *pressed_choice;
++	EvDocument *pressed_choice_document;
+ 
+ 	/* Key bindings propagation */
+ 	gboolean key_binding_handled;
+diff --git a/libview/ev-view.c b/libview/ev-view.c
+index b55fe8e..cac0613 100644
+--- a/libview/ev-view.c
++++ b/libview/ev-view.c
+@@ -6291,6 +6291,8 @@ ev_view_button_press_event (GtkGestureClick	*gesture,
+ 	EvView *view = EV_VIEW (widget);
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
+ 
++	g_clear_object (&priv->pressed_choice);
++	g_clear_object (&priv->pressed_choice_document);
+ 	ev_view_link_preview_popover_cleanup (view);
+ 
+ 	if (!priv->document || ev_document_get_n_pages (priv->document) <= 0)
+@@ -6405,6 +6407,16 @@ ev_view_button_press_event (GtkGestureClick	*gesture,
+ 					priv->moving_annot_info.cursor_offset.y = doc_point.y - current_area.y1;
+ 				}
+ 			} else if ((field = ev_view_get_form_field_at_location (view, x, y))) {
++				/* Creating a combo under a held pointer changes GTK's
++				 * press target before release, unbalancing active state.
++				 * Activate it when this click has finished instead. */
++				if (EV_IS_FORM_FIELD_CHOICE (field) &&
++				    EV_FORM_FIELD_CHOICE (field)->type == EV_FORM_FIELD_CHOICE_COMBO &&
++				    !EV_FORM_FIELD_CHOICE (field)->is_editable) {
++					priv->pressed_choice = g_object_ref (field);
++					priv->pressed_choice_document = g_object_ref (priv->document);
++					return;
++				}
+ 				ev_view_remove_all_form_fields (view);
+ 				ev_view_handle_form_field (view, field);
+ 			} else if ((link = get_link_mapping_at_location (view, x, y, &page))){
+@@ -7033,6 +7045,8 @@ ev_view_button_release_event(GtkGestureClick		*self,
+ 	guint32 time = gtk_event_controller_get_current_event_time (controller);
+ 	EvLink *link = NULL;
+ 	EvViewPrivate *priv = GET_PRIVATE (view);
++	g_autoptr (GObject) pressed_choice = (GObject *) g_steal_pointer (&priv->pressed_choice);
++	g_autoptr (EvDocument) pressed_choice_document = g_steal_pointer (&priv->pressed_choice_document);
+ 
+ 	priv->image_dnd_info.in_drag = FALSE;
+ 	priv->selection_info.in_select = FALSE;
+@@ -7055,6 +7069,17 @@ ev_view_button_release_event(GtkGestureClick		*self,
+ 		return;
+ 	}
+ 
++	if (pressed_choice) {
++		priv->pressed_button = -1;
++		if (priv->document == pressed_choice_document &&
++		    ev_view_get_form_field_at_location (view, x, y) == EV_FORM_FIELD (pressed_choice)) {
++			ev_view_remove_all_form_fields (view);
++			if (priv->document == pressed_choice_document)
++				ev_view_handle_form_field (view, EV_FORM_FIELD (pressed_choice));
++		}
++		return;
++	}
++
+ 	if (priv->document && !priv->drag_info.in_drag &&
+ 	    (priv->pressed_button == GDK_BUTTON_PRIMARY ||
+ 	     priv->pressed_button == GDK_BUTTON_MIDDLE)) {
+@@ -8299,6 +8324,8 @@ ev_view_dispose (GObject *object)
+ 	}
+ 
+ 	g_clear_object (&priv->pixbuf_cache);
++	g_clear_object (&priv->pressed_choice);
++	g_clear_object (&priv->pressed_choice_document);
+ 	g_clear_object (&priv->document);
+ 	g_clear_object (&priv->page_cache);
+ 
+@@ -9316,6 +9343,9 @@ ev_view_document_changed_cb (EvDocumentModel *model,
+ 	if (document != priv->document) {
+ 		gint current_page;
+ 
++		g_clear_object (&priv->pressed_choice);
++		g_clear_object (&priv->pressed_choice_document);
++
+ 		ev_view_remove_all (view);
+ 		/* The focused mapping belongs to the old page cache. */
+ 		_ev_view_set_focused_element (view, NULL, -1);
+-- 
+2.43.0
+

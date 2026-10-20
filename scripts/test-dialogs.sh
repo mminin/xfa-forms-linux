@@ -13,5 +13,5 @@ export GSETTINGS_SCHEMA_DIR="$PREFIX/share/glib-2.0/schemas"
 export GSETTINGS_BACKEND=memory GTK_IM_MODULE=simple
 cc ${CFLAGS:-} -Wall -Wextra -Werror -Wno-unused-parameter -Wno-deprecated-declarations -o "$OUT/check-dialogs" \
     "$ROOT/tools/headless/check-dialogs.c" \
-    $(pkg-config --cflags --libs evince-view-4.0 evince-document-4.0 poppler-glib)
+    $(pkg-config --cflags --libs evince-view-4.0 evince-document-4.0 poppler-glib gmodule-2.0)
 timeout 45 "$OUT/check-dialogs" "$@"

@@ -6,6 +6,11 @@
 #include <glib/gstdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <gmodule.h>
+#ifdef GDK_WINDOWING_X11
+#include <gdk/x11/gdkx.h>
+#include <X11/keysym.h>
+#endif
 
 static const char *xdp =
     "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">"
@@ -788,6 +793,109 @@ static void editing_free (EditingFixture *f)
     g_free (f->uri);
 }
 
+static void editing_assert_choice (EditingFixture *f, int selected)
+{
+    EvDocument *document = ev_document_model_get_document (f->model);
+    EvFormField *field = find_field (document, "choice");
+    for (int i = 0; i < 2; ++i)
+        g_assert_cmpint (ev_document_forms_form_field_choice_is_item_selected (
+                            EV_DOCUMENT_FORMS (document), field, i), ==, i == selected);
+    g_object_unref (field);
+}
+
+/* Real, held mouse clicks matter here: sending press and release in one
+ * batch misses editors appearing beneath the pointer between events. */
+static void test_mouse_choice (void)
+{
+#ifdef GDK_WINDOWING_X11
+    if (!GDK_IS_X11_DISPLAY (gdk_display_get_default ())) {
+        g_test_skip ("Mouse regression requires a private X11 display");
+        return;
+    }
+    GModule *x11 = g_module_open ("libX11.so.6", G_MODULE_BIND_LAZY | G_MODULE_BIND_LOCAL);
+    GModule *xtst = g_module_open ("libXtst.so.6", G_MODULE_BIND_LAZY | G_MODULE_BIND_LOCAL);
+    if (!x11 || !xtst) {
+        if (x11) g_module_close (x11);
+        if (xtst) g_module_close (xtst);
+        g_test_skip ("Mouse regression requires libXtst.so.6");
+        return;
+    }
+    Bool (*motion) (Display *, int, int, int, unsigned long);
+    Bool (*button) (Display *, unsigned int, Bool, unsigned long);
+    Bool (*key) (Display *, unsigned int, Bool, unsigned long);
+    int (*flush) (Display *);
+    KeyCode (*keycode) (Display *, KeySym);
+    Bool (*translate) (Display *, Window, Window, int, int, int *, int *, Window *);
+    g_assert_true (g_module_symbol (xtst, "XTestFakeMotionEvent", (gpointer *) &motion));
+    g_assert_true (g_module_symbol (xtst, "XTestFakeButtonEvent", (gpointer *) &button));
+    g_assert_true (g_module_symbol (xtst, "XTestFakeKeyEvent", (gpointer *) &key));
+    g_assert_true (g_module_symbol (x11, "XFlush", (gpointer *) &flush));
+    g_assert_true (g_module_symbol (x11, "XKeysymToKeycode", (gpointer *) &keycode));
+    g_assert_true (g_module_symbol (x11, "XTranslateCoordinates", (gpointer *) &translate));
+    EditingFixture f = editing_fixture (
+        "<field name=\"lead\" w=\"3in\" h=\"0.4in\"><ui><textEdit/></ui></field>"
+        "<field name=\"choice\" w=\"3in\" h=\"0.4in\"><assist><toolTip>choice</toolTip></assist>"
+        "<ui><choiceList/></ui><items><text>One</text><text>Two</text></items>"
+        "<items save=\"1\"><text>one</text><text>two</text></items><value><text>one</text></value></field>");
+    g_test_message ("Opening choice with keyboard");
+    GtkWidget *combo = editing_open (&f, GTK_TYPE_COMBO_BOX);
+    graphene_rect_t bounds;
+    g_assert_true (gtk_widget_compute_bounds (combo, f.window, &bounds));
+    Display *display = gdk_x11_display_get_xdisplay (gdk_display_get_default ());
+    GdkSurface *surface = gtk_native_get_surface (GTK_NATIVE (f.window));
+    Window child;
+    int x, y;
+    g_assert_true (translate (display, gdk_x11_surface_get_xid (surface), DefaultRootWindow (display),
+                             bounds.origin.x + bounds.size.width / 2,
+                             bounds.origin.y + bounds.size.height / 2, &x, &y, &child));
+    gtk_combo_box_popdown (GTK_COMBO_BOX (combo));
+    spin_editing ();
+    for (int i = 0; i < 3; ++i) {
+        g_test_message ("Held mouse click %d at %d,%d", i, x, y);
+        motion (display, -1, x, y, 0);
+        flush (display);
+        spin_editing ();
+        button (display, 1, True, 0);
+        flush (display);
+        spin_editing ();
+        g_assert_null (find_widget_type (f.view, GTK_TYPE_COMBO_BOX));
+        button (display, 1, False, 0);
+        flush (display);
+        spin_editing ();
+        combo = find_widget_type (f.view, GTK_TYPE_COMBO_BOX);
+        g_assert_nonnull (combo);
+        gboolean shown = FALSE;
+        g_object_get (combo, "popup-shown", &shown, NULL);
+        g_assert_true (shown);
+        unsigned int code = keycode (display, i == 1 ? XK_Up : XK_Down);
+        key (display, code, True, 0);
+        key (display, code, False, 0);
+        code = keycode (display, XK_Return);
+        key (display, code, True, 0);
+        key (display, code, False, 0);
+        flush (display);
+        spin_editing ();
+        editing_assert_choice (&f, i == 1 ? 0 : 1);
+    }
+    /* Releasing away from the field cancels activation. */
+    motion (display, -1, x, y, 0);
+    button (display, 1, True, 0);
+    flush (display);
+    spin_editing ();
+    motion (display, -1, x, y + 120, 0);
+    button (display, 1, False, 0);
+    flush (display);
+    spin_editing ();
+    g_assert_null (find_widget_type (f.view, GTK_TYPE_COMBO_BOX));
+    editing_assert_choice (&f, 1);
+    editing_free (&f);
+    g_module_close (xtst);
+    g_module_close (x11);
+#else
+    g_test_skip ("GTK was built without X11 support");
+#endif
+}
+
 static void test_multiline_limit (void)
 {
     EditingFixture f = editing_fixture (
@@ -947,6 +1055,7 @@ int main (int argc, char **argv)
     g_test_add_data_func ("/view/commit-active-editor", GINT_TO_POINTER (FALSE), test_commit_active_editor);
     g_test_add_data_func ("/view/commit-pending-editor", GINT_TO_POINTER (TRUE), test_commit_active_editor);
     g_test_add_func ("/view/unicode-edit", test_unicode_edit);
+    g_test_add_func ("/view/mouse-choice", test_mouse_choice);
     int result = g_test_run ();
     ev_shutdown ();
     return result;

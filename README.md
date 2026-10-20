@@ -101,7 +101,7 @@ here. They have no file or network access; a URL a form asks to open
 The Ubuntu 24.04 amd64 release package can be installed with:
 
 ```sh
-sudo apt install ./xfa-forms-linux_0.1.0-1_amd64.deb
+sudo apt install ./xfa-forms-linux_0.1.0-2_amd64.deb
 xfa-forms-linux document.pdf
 ```
 
@@ -262,6 +262,7 @@ Evince (`patches/evince/`):
 | 0020 | Commit editable choices on focus-out and Enter |
 | 0021 | Commit active and pending editors before save, print, close or reload checks |
 | 0022 | Allow a separate application ID for the Ubuntu package and its desktop integration |
+| 0023 | Activate form dropdowns on mouse release to preserve GTK pointer state |
 
 Evince 0002–0005 and 0008 don't depend on XFA: they fix bugs that affect ordinary
 PDFs in Evince's main branch as of the base commit.
