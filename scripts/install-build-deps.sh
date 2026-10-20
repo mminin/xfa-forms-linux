@@ -5,7 +5,7 @@ set -e
 
 apt-get update
 apt-get install -y \
-    build-essential cmake ninja-build meson pkg-config git python3-venv \
+    build-essential cmake ninja-build meson pkg-config git curl python3-venv poppler-utils \
     itstool gettext desktop-file-utils appstream \
     libfreetype-dev libfontconfig-dev libcairo2-dev libglib2.0-dev \
     libgirepository1.0-dev gobject-introspection \

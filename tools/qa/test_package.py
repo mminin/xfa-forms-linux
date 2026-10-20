@@ -3,6 +3,7 @@
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -119,6 +120,42 @@ class PackageTests(unittest.TestCase):
         first = self.command(script)
         self.assertEqual(first.returncode, 0, first.stdout.decode())
         path = self.package / 'corpus/files/form.pdf'
+        self.assertEqual(path.read_bytes(), b'verified sample')
+        self.env.update(QA_DOWNLOAD_BODY='partial bytes', QA_DOWNLOAD_STATUS='22')
+        again = self.command(script)
+        self.assertEqual(again.returncode, 0, again.stdout.decode())
+        self.assertEqual(path.read_bytes(), b'verified sample')
+
+    def sample_fixture(self, body, status=0):
+        script = Path(self.script('fetch-sample.sh'))
+        payload = b'verified sample'
+        text = script.read_text()
+        script.write_text(re.sub(r'^SHA256=.*$', 'SHA256=' + hashlib.sha256(payload).hexdigest(), text, flags=re.M))
+        curl = self.bin / 'curl'
+        curl.write_text('#!/bin/sh\nprintf "%s" "$QA_DOWNLOAD_BODY" > "$3"\nexit "$QA_DOWNLOAD_STATUS"\n')
+        curl.chmod(0o755)
+        self.env.update(QA_DOWNLOAD_BODY=body, QA_DOWNLOAD_STATUS=str(status))
+        return str(script), self.package / 'samples/consent-letter-2123.pdf'
+
+    def test_sample_checksum_failure_preserves_previous_file(self):
+        script, path = self.sample_fixture('changed form')
+        path.parent.mkdir()
+        path.write_bytes(b'previous download')
+        result = self.command(script)
+        self.assertNotEqual(result.returncode, 0, result.stdout.decode())
+        self.assertEqual(path.read_bytes(), b'previous download')
+        self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_sample_network_failure_discards_partial_file(self):
+        script, path = self.sample_fixture('partial bytes', 22)
+        self.assertNotEqual(self.command(script).returncode, 0)
+        self.assertFalse(path.exists())
+        self.assertEqual(list(path.parent.iterdir()), [])
+
+    def test_sample_verified_download_and_cache(self):
+        script, path = self.sample_fixture('verified sample')
+        first = self.command(script)
+        self.assertEqual(first.returncode, 0, first.stdout.decode())
         self.assertEqual(path.read_bytes(), b'verified sample')
         self.env.update(QA_DOWNLOAD_BODY='partial bytes', QA_DOWNLOAD_STATUS='22')
         again = self.command(script)

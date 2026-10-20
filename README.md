@@ -9,10 +9,12 @@ With these patches the viewer lays out the form, runs its JavaScript, and lets y
 fill it in. You can also generate the form's output document, print it, and save
 and reopen the filled form, all locally on your own computer.
 
-**Status: experimental.** It was developed against one real form, the Government
+**Release candidate: 0.1.0, experimental.** See [release notes](RELEASE_NOTES.md)
+for the first release's scope and compatibility limits. It began with the Government
 of Canada's [consent letter for children travelling outside Canada](https://travel.gc.ca/travelling/children/consent-letter)
-(form 2123). It implements the XFA features that form uses, which is not general
-XFA compatibility. Nothing here has been reviewed or accepted upstream yet.
+(form 2123), and now has rendering and editing regression coverage across the
+corpus below. This is not general XFA compatibility. Nothing here has been reviewed
+or accepted upstream yet.
 
 [`corpus/`](corpus/README.md) measures 129 federal forms, including every fillable form
 in the CRA's catalogue. 105 of them are dynamic XFA forms that Linux PDF viewers can't
@@ -104,6 +106,10 @@ scripts/fetch-sample.sh                 # download the tested form from travel.g
 scripts/run-evince.sh samples/consent-letter-2123.pdf
 ```
 
+The build uses four parallel jobs by default; set `JOBS=2 scripts/build.sh` on a
+machine with less memory. Keep the source directory in its final location before
+building: the local installation records its absolute path.
+
 `bootstrap.sh` checks out each project at the base commit listed in `UPSTREAM`
 and applies the patches with `git am` on a branch named `xfa-support`. The patched
 Evince uses the development profile (`org.gnome.Evince.Devel`), so it runs beside
@@ -162,6 +168,9 @@ letter was produced.
 `tools/headless/` drives the patched Evince on a private headless GNOME Shell
 session with X11 input and screenshots, for testing the user interface without
 touching your desktop. See the comments in `run-session.sh` and `drive.py`.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for bug reports and
+[RELEASING.md](RELEASING.md) for preparing checksummed source archives.
 
 ## Patches
 
