@@ -58,7 +58,7 @@ the association between the public commit, binary and source checksums.
 
 ## 0.1.0 source-release verification — 2026-10-20
 
-The archive generated from public candidate `526964b` was extracted into a fresh
+The archive generated from public candidate `003fdce` was extracted into a fresh
 directory and built from scratch on Ubuntu 24.04, x86-64, using GCC 13.3.0,
 CMake 3.28.3 and Meson 1.3.2, with four parallel build jobs. The build used local
 Git mirrors of the pinned upstream sources. A separate fresh extraction fetched
