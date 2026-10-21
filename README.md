@@ -3,7 +3,7 @@
 Patches for [Poppler](https://poppler.freedesktop.org/) and
 [Evince](https://gitlab.gnome.org/GNOME/evince) that let a free PDF viewer open
 **dynamic XFA forms**: the kind of government form that every non-Adobe viewer
-shows only as "Please wait… this document requires Adobe Reader 8 or higher".
+shows only as a "Please wait…" or "requires Adobe Reader 8 or higher" page.
 
 With these patches the viewer lays out the form, runs its JavaScript, and lets you
 fill it in. You can also generate the form's output document, print it, and save
@@ -22,6 +22,39 @@ open at all. Among them are most IRCC immigration applications and 90 tax forms,
 the T1135 Foreign Income Verification Statement and the TFSA and FHSA returns. This
 engine lays all of them out, but so far only the consent letter is verified to work
 fully.
+
+## Does this apply to your form?
+
+If your PDF viewer (Evince, Okular, Chrome, or another non-Adobe viewer)
+shows one of these pages instead of the form, it is a dynamic XFA form:
+
+> Please wait...
+>
+> If this message is not eventually replaced by the proper contents of the
+> document, your PDF viewer may not be able to display this type of document.
+>
+> You can upgrade to the latest version of Adobe Reader for Windows®, Mac, or
+> Linux® by visiting http://www.adobe.com/go/reader_download.
+
+> The document you are trying to load requires Adobe Reader 8 or higher. You may
+> not have the Adobe Reader installed or your viewing environment may not be
+> properly configured to use Adobe Reader.
+
+The page is the form's own placeholder, so the wording depends on who made the
+form. The first is Adobe's default, used by 103 of the 129 forms in the corpus;
+the second is used by the consent letter and IMM 5669.
+
+Forms of this kind that this viewer opens include, from IRCC: the visitor visa
+application (IMM 5257), the study and work permit applications (IMM 1294,
+IMM 1295), extensions of stay (IMM 5708, IMM 5709, IMM 5710), the generic
+application form (IMM 0008), sponsorship (IMM 1344, IMM 5532), family information
+(IMM 5406, IMM 5707), the PR card application (IMM 5444), Schedule A (IMM 5669)
+and travel history (IMM 5562); from the CRA: T1135, T1134, T106, T1141, T1142,
+T3010, T661, T2 Schedule 75, RC243 (TFSA), RC4649 and the CPT certificates of
+coverage; and the Government of Canada consent letter for children travelling
+abroad. They open and can be filled in, but only the consent letter has been
+checked end to end; check other forms' output before relying on it. The full
+list, with what still fails, is in [`corpus/`](corpus/README.md).
 
 ## What works
 
