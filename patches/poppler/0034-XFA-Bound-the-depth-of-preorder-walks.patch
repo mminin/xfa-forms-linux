@@ -1,4 +1,4 @@
-From 6d39a10347aaa060dd3eda17015dd1030426cbf1 Mon Sep 17 00:00:00 2001
+From 65bc6434bb121ce5d40db54eeffb907fc4a3c4d2 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 15:21:11 -0700
 Subject: [PATCH] XFA: Bound the depth of preorder walks

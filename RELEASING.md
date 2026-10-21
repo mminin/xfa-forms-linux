@@ -88,5 +88,7 @@ repository, mark the release as experimental/prerelease, use `RELEASE_NOTES.md`
 as its description, and attach both source archives, the Ubuntu `.deb`,
 `release.json` and `SHA256SUMS`.
 
-No remote hosting destination is configured in the prepared local repository.
-Choosing that destination and publishing are separate from preparing these assets.
+The experimental prerelease is hosted in the private GitHub repository
+`mminin/xfa-forms-linux`. Before replacing a published candidate, preserve its
+refs and assets locally and rebuild matching source archives, binary metadata
+and checksums from the new public commit.

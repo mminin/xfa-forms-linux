@@ -23,3 +23,27 @@ used. Add a regression that reproduces a behavioral fix when practical.
 For a suspected vulnerability, contact the maintainer at the address in
 [README.md](README.md) before posting an exploit or a sensitive document publicly.
 This is an experimental project without a formal security response SLA.
+
+## AI attribution
+
+Keep the human contributor as the Git author. For AI-assisted implementation,
+documentation or verification, put the assistant's co-author trailer in both
+its upstream commit and the aggregate source/export commit. For Codex, use:
+
+```text
+AI-Assistant: OpenAI Codex
+AI-Model: gpt-6.1-sol
+AI-Reasoning-Effort: high
+Co-authored-by: Codex <noreply@openai.com>
+```
+
+Record the actual model and reasoning setting when verified; write `unknown`
+when unavailable. The example above describes this project's verified Codex
+sessions. Preserve existing Claude trailers and their recorded model names.
+When importing work by both assistants, retain both credits and explain their
+respective contributions. A review alone should be described as a review.
+
+Keep the trailers when amending, squashing or exporting commits. Before
+publication, inspect `git log --format=full` and the message headers in every
+changed patch. Credits in README/PR_PLAN and `Assisted-by` prose do not replace
+`Co-authored-by` commit trailers.

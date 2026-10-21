@@ -1,4 +1,4 @@
-From 7b3a9c577adecb4366b833054098b75d94188bfa Mon Sep 17 00:00:00 2001
+From ecc5ddb15a44e284fc84664e1cc0cd0990e919a2 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:28:23 -0700
 Subject: [PATCH] libview: Move to the form field that form scripts ask for

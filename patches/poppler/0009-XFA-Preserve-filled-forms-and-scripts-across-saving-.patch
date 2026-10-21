@@ -1,4 +1,4 @@
-From f2774954b1298afb1252b5511d9c4c1c8dc83c60 Mon Sep 17 00:00:00 2001
+From 9733aaa748bf710ed6374273930bfa0d2623f12f Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:53:17 -0700
 Subject: [PATCH] XFA: Preserve filled forms and scripts across saving and

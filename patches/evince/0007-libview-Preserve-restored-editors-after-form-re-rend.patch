@@ -1,4 +1,4 @@
-From 84ef90c4995567ef2876857c1c2c634890c94ba9 Mon Sep 17 00:00:00 2001
+From 70269e50701cd7ad3e611315e9a47c1fb3944d9e Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:18:00 -0700
 Subject: [PATCH] libview: Preserve restored editors after form re-rendering

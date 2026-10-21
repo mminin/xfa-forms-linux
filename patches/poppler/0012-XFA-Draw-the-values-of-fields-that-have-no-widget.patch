@@ -1,4 +1,4 @@
-From d18fd2afe1e19498e390fc95637550aafd258db2 Mon Sep 17 00:00:00 2001
+From a87ce8f701376bd27fd3c3f25b05af78aa1ff576 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:33:19 -0700
 Subject: [PATCH] XFA: Draw the values of fields that have no widget

@@ -1,4 +1,4 @@
-From 3567391e5ece0fbe5f47d2500407d507f9cbad28 Mon Sep 17 00:00:00 2001
+From 10ee3a498354b7a18d0ef7d67380ab734e42e11e Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:28:23 -0700
 Subject: [PATCH] XFA: Resolve paths ending in an instance manager

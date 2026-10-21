@@ -1,4 +1,4 @@
-From 13e15172bdbceef76542ab8a2e941facb068f027 Mon Sep 17 00:00:00 2001
+From 973056aa33ca86925abbc5cd701d28c3b79f9d95 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:20:49 -0700
 Subject: [PATCH] XFA: Safely lay out and destroy deeply nested script trees

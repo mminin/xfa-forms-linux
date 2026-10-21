@@ -1,4 +1,4 @@
-From 6641b00e768ffc90a8f41f1414206c5d2171f048 Mon Sep 17 00:00:00 2001
+From 52ad45cad7dd26f896b69f73d4077e8d87da56f0 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:20:49 -0700
 Subject: [PATCH] XFA: Let script locals shadow form fields

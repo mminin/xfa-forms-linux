@@ -1,4 +1,4 @@
-From 2223db46eee23cd6f09207f653df8dd46bf362e8 Mon Sep 17 00:00:00 2001
+From 0997b1f42b84a5fe8bfcbe48010bc23d72ebb98f Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 12:59:25 -0700
 Subject: [PATCH] XFA: Take picture symbols from the form's locales; add time

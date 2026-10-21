@@ -1,4 +1,4 @@
-From efd115a1947e3429973e0b1d1450a46fe3393e77 Mon Sep 17 00:00:00 2001
+From 232567232a3cc5bdf7c07523b6a1a13d7c5e1613 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:20:49 -0700
 Subject: [PATCH] XFA: Count all class siblings in anonymous SOM expressions

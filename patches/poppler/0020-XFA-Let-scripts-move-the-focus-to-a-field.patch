@@ -1,4 +1,4 @@
-From c1dda4250dccb09e63b79fe17a1ba053f82fd4e6 Mon Sep 17 00:00:00 2001
+From 4e9981a22bd26134b88e31a5dd9e4c57c16aeb5c Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:28:23 -0700
 Subject: [PATCH] XFA: Let scripts move the focus to a field

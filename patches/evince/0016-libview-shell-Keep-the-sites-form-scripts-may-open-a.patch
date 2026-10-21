@@ -1,4 +1,4 @@
-From 18720a6519086c22109eb9cc5f16f744477ee55a Mon Sep 17 00:00:00 2001
+From e1dfb492be0e11b6de21efd8c17fde06dbe22fc8 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 12:32:21 -0700
 Subject: [PATCH] libview, shell: Keep the sites form scripts may open across

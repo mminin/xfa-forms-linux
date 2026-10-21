@@ -1,4 +1,4 @@
-From 84419ddc6c42b744377e62240f64259d4869e880 Mon Sep 17 00:00:00 2001
+From 00a4f2aab4047e23ccef9b255f53934f9858bd61 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:22:04 -0700
 Subject: [PATCH] XFA: Break pages after objects, keep objects together, repeat

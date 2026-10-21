@@ -1,4 +1,4 @@
-From 3310830a31771bf2344de4ef49ea169d3ef87c77 Mon Sep 17 00:00:00 2001
+From fe593eb5c5405aa12ea723d59f2c439adcb4ae37 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 12:16:48 -0700
 Subject: [PATCH] glib: Document that XFA script URLs are not checked

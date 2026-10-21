@@ -63,6 +63,14 @@ output match Adobe Reader.
 See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for the detailed limitations and
 [CONTRIBUTING.md](CONTRIBUTING.md) for reproducible bug reports.
 
+## Attribution refresh — 2026-10-21
+
+The prerelease was refreshed to restore Codex co-author and verified model
+trailers in the project history and 25 patches, while preserving Claude
+credits. This refresh changes attribution metadata and release provenance;
+it adds no program behavior. Rebuilt release files refer to the repaired
+source history. The Ubuntu package remains `0.1.0-2`.
+
 ## Credits and license
 
 Developed under mminin's direction with assistance from Anthropic Claude and

@@ -1,4 +1,4 @@
-From def9b13b6b2062595e36c66716167eff314766ef Mon Sep 17 00:00:00 2001
+From 8e27d6ccbfc2d2d3eb5feca1854d2a264df5e3ac Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 14:48:39 -0700
 Subject: [PATCH] XFA: Support SOM predicates

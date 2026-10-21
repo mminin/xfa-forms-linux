@@ -1,4 +1,4 @@
-From 644311a9d34f1e76d2eb8824f4b16c8d469b554d Mon Sep 17 00:00:00 2001
+From 7b391d35f69d4e5ff5c4cd89b3e70654421c0c08 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 15:21:23 -0700
 Subject: [PATCH] XFA: Bind fields to data nodes as Acrobat does

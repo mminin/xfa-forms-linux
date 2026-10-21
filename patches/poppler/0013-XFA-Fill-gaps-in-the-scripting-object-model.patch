@@ -1,4 +1,4 @@
-From 9a23249ccaa64b5412f277f25da2fed5cdf46b2d Mon Sep 17 00:00:00 2001
+From 509bbb5098ed7fb47dd180cc31efa99690991065 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:42:00 -0700
 Subject: [PATCH] XFA: Fill gaps in the scripting object model

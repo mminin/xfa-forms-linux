@@ -1,4 +1,4 @@
-From 83a9f3de019bbf1e8283f98b1a3c884b9bb5e251 Mon Sep 17 00:00:00 2001
+From 7ebbac5e34967b3f87acb33e6dcb23d4a0a8f4e2 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 15:29:48 -0700
 Subject: [PATCH] XFA: Show characters the standard fonts lack with system

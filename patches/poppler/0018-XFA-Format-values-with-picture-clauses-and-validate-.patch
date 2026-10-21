@@ -1,4 +1,4 @@
-From 52a68a95ae78c6094c42f7d4225386cfa4fff063 Mon Sep 17 00:00:00 2001
+From bd41658327151da86f70dc5b1484cf305accb87a Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:17:13 -0700
 Subject: [PATCH] XFA: Format values with picture clauses, and validate them

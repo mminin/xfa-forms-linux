@@ -1,4 +1,4 @@
-From ed881b956214f84bfc9465f24049d8262dc74a6c Mon Sep 17 00:00:00 2001
+From 6578a7394df0da6d2da1f91de438e69a4aa74183 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:59:23 -0700
 Subject: [PATCH] XFA: Run FormCalc scripts

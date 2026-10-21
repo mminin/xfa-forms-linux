@@ -1,4 +1,4 @@
-From 39a3c76acbd8a54a9afe9ec282b4a5679e9a402f Mon Sep 17 00:00:00 2001
+From 4b8a2f699cc442ce2060a784252e5b871fcdf122 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 16:47:09 -0700
 Subject: [PATCH] XFA: Exclude host dialogs from script execution deadlines

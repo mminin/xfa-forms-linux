@@ -1,4 +1,4 @@
-From 334c2c5468ad686068731487bac3428fc14b5155 Mon Sep 17 00:00:00 2001
+From cf21fc3175cea3557760f4e0d02ad829935ce5af Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 16:06:02 -0700
 Subject: [PATCH] XFA: Keep the space above the first paragraph of text

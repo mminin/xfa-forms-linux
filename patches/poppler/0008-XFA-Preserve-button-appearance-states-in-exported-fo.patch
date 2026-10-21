@@ -1,4 +1,4 @@
-From dcbaf20ed3ef16912df020dd1a5f0db1b95b1e70 Mon Sep 17 00:00:00 2001
+From f3f7adf3a31e1601f1860057380da0f7e11b5678 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 13 Oct 2026 16:26:54 -0700
 Subject: [PATCH] XFA: Preserve button appearance states in exported forms

@@ -1,4 +1,4 @@
-From 709a89f578f1a6ace1b91b03c3178e547a1bd6bc Mon Sep 17 00:00:00 2001
+From dd657846d15ac1adcda4dd98480fa406380d82ec Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:11:32 -0700
 Subject: [PATCH] XFA: Embed fallback fonts in text and choice appearances

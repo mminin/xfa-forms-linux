@@ -1,4 +1,4 @@
-From db94dcd8eccd6f70d93b3050accd5137cda01e42 Mon Sep 17 00:00:00 2001
+From 33b32ce07f0cdc5735116394c7778ed13e0cc73b Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 20 Oct 2026 11:36:05 -0700
 Subject: [PATCH] Keep daemon activation names and protocol interfaces

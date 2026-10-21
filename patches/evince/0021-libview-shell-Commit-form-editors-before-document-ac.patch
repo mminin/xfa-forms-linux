@@ -1,4 +1,4 @@
-From 1b46a1173aa6448b4ecd30debf64b8e7b4e387f6 Mon Sep 17 00:00:00 2001
+From 60fc85f1248c45a08084dd139aed9ea4c08584fb Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:11:16 -0700
 Subject: [PATCH] libview, shell: Commit form editors before document actions

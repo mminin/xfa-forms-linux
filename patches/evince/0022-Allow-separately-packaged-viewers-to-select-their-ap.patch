@@ -1,4 +1,4 @@
-From 40232de836100df1b7a327b1d27a042101c970e0 Mon Sep 17 00:00:00 2001
+From e4b51282d00f5645e77cadfc32dec3214376189f Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Tue, 20 Oct 2026 10:20:45 -0700
 Subject: [PATCH] Allow separately packaged viewers to select their application

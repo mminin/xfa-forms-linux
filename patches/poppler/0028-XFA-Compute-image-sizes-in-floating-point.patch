@@ -1,4 +1,4 @@
-From 159ac2156abe12eb21551aeb91a7f06b3ed731e1 Mon Sep 17 00:00:00 2001
+From e288464b2b9573dfba859b834adae4a3d0dc7007 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 12:16:48 -0700
 Subject: [PATCH] XFA: Compute image sizes in floating point

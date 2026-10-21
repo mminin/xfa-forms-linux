@@ -1,4 +1,4 @@
-From e28b9debfcf0cfdc5ad424704c170d3977811231 Mon Sep 17 00:00:00 2001
+From 4c238486e6a7de164b489e26cdb3b87bdc273115 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 15:30:22 -0700
 Subject: [PATCH] XFA: Decode PNG, BMP and TIFF images

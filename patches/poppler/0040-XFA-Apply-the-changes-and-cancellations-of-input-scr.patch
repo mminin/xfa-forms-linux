@@ -1,4 +1,4 @@
-From 7ceeb82091de03fa453510911d7eef32e1b1a44f Mon Sep 17 00:00:00 2001
+From 57d6209c188e78a541ed9aa52ba3846ae5e08253 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:11:32 -0700
 Subject: [PATCH] XFA: Apply the changes and cancellations of input scripts

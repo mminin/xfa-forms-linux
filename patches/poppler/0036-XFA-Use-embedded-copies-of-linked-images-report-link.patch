@@ -1,4 +1,4 @@
-From 45ce208ddfa2e4ecd30f41e157aafe06c0dc1e69 Mon Sep 17 00:00:00 2001
+From 5d56f957125879d0c16fbd7ccfe025637ff816d1 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 15:21:35 -0700
 Subject: [PATCH] XFA: Use embedded copies of linked images; report linked

@@ -1,4 +1,4 @@
-From 873c67b9e2b81c625c50098a22fbfc138e14a585 Mon Sep 17 00:00:00 2001
+From 4a792f6bf9a3dafbb26ff312e2e6e740a5aa4f58 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Fri, 16 Oct 2026 17:35:27 -0700
 Subject: [PATCH] XFA: Reject corrupt state and handle deeply nested or

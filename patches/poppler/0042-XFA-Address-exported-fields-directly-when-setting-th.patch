@@ -1,4 +1,4 @@
-From 77e924484ad8076dc443b9afa5c658a36c50a8c5 Mon Sep 17 00:00:00 2001
+From 1938dc57dbb5c4c5b60354213dc2ace63cdd8622 Mon Sep 17 00:00:00 2001
 From: mminin <mminin2010@gmail.com>
 Date: Mon, 19 Oct 2026 18:11:32 -0700
 Subject: [PATCH] XFA: Address exported fields directly when setting their

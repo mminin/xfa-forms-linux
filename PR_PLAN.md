@@ -25,7 +25,7 @@ Patch numbers refer to the current series in `patches/`.
 | Contributor / assistant | Work |
 |---|---|
 | Human maintainer, mminin | Directed the work, provided requirements and interactive feedback, and owns review, publication and maintenance. |
-| OpenAI Codex (2026-10-20 packaging follow-up) | Matching print-preview helpers; release archive and checksum tooling; isolated Ubuntu package and complete-source builds; Evince 0022 for a separate desktop identity 0023 for dropdown mouse activation and 0024 for consistent daemon identities; standard D-Bus activation-file installation; clean-container installation, runtime, printing and removal checks, with fresh-bus and held-click regressions. |
+| OpenAI Codex (2026-10-20 packaging follow-up) | Matching print-preview helpers; release archive and checksum tooling; isolated Ubuntu package and complete-source builds; Evince 0022 for a separate desktop identity, 0023 for dropdown mouse activation and 0024 for consistent daemon identities; standard D-Bus activation-file installation; clean-container installation, runtime, printing and removal checks, with fresh-bus and held-click regressions. |
 | OpenAI Codex (2026-10-19 editing audit) | Evince 0018–0021 and Poppler 0040–0047: multiline and editable-choice editing, document-action commits, input filters, Unicode appearances, rendering synchronization, field addressing, script locals, deep-tree handling and instance-manager resolution. Added the corpus edit/save/reopen sweep and expanded GUI/core regressions; see [TESTING.md](TESTING.md). |
 | Claude (Opus 5.5 and 4.8, as credited in existing commit trailers) | Initial XFA engine, detection and rendering APIs, scripting, layout, initial Evince integration and fixes through Poppler 0007 and Evince 0006; later source-package cleanup, the federal-form corpus, Poppler 0010–0021 (images, tables, scripting, data DOM, FormCalc, validation, barcodes, formatting, pagination, focus and dialog API), Poppler 0026 (truncated images), Poppler 0027 (bounding recursive tree walks) and Evince 0012-0013 (teardown fix and Reader-style URL confirmation), the last three under Opus 4.8, and Evince 0009 (script-requested focus); under Opus 5.5, Poppler 0028–0039 (image size arithmetic, API warnings for script URLs, locales in picture clauses, the rest of FormCalc, SOM predicates, Acrobat's Doc object as `event.target`, bounded preorder walks, data binding, embedded copies of linked images, system fonts for characters the standard fonts lack, rotation, space above text) and Evince 0014–0017 (editor allocation, saved values in reopened editors, persistent script-URL sites and policy, Ctrl+wheel zoom). |
 | OpenAI Codex, GPT-6.1 Sol, reasoning effort `high` | Poppler 0008: preserve radio-button appearance states in ordinary PDF exports, with save/reopen regression coverage. |
@@ -111,3 +111,45 @@ The results below describe the earlier 2026-10-16 build.
 The feature work is available for review. Full compatibility with the remaining
 forms, startup-script dialogs and the broader gaps in the README remain future
 work; this verification does not establish submission-ready output for every form.
+
+## Commit attribution audit — 2026-10-21
+
+The October 19–20 editing and packaging session records also identify
+GPT-6.1 Sol (`gpt-6.1-sol`) with high reasoning effort. Those records were checked
+on October 21; automatic approval-review sessions were excluded.
+
+The first prerelease history contains 16 primary Codex commits without AI
+trailers and two mixed import commits missing Codex credit. The table below
+records the original and repaired hashes, so attribution remains available in
+clones of either history. This omission already existed in original Codex
+commits; it was not solely introduced by the maintainer-identity rewrite.
+
+| Original commit | Repaired commit | Work | Codex contribution |
+|---|---|---|---|
+| `0b0a569` | `5a468a3` | XFA forms in Evince: patches for Poppler and Evince | Imports Codex's Poppler 0008–0009 and Evince 0007–0008; retains Claude's original engine and integration credits. |
+| `6bbfca5` | `58689e3` | Document verified Codex model and contribution attribution for publication | Primary implementation, verification or documentation |
+| `b2a0705` | `9df7041` | Complete script question and prompt dialogs in Evince | Primary implementation, verification or documentation |
+| `b3d6c1d` | `de0d8a1` | Record verification and remaining compatibility limits | Primary implementation, verification or documentation |
+| `52afdba` | `5380c1b` | Detect interrupted bootstraps and verify downloads before replacing the cache | Primary implementation, verification or documentation |
+| `107aebc` | `fa4df25` | Refuse truncated TIFF and GIF images; harden corrupt-state handling | Imports Codex's Poppler 0024–0025 and Evince 0011 alongside Claude's Poppler 0026. |
+| `15c801e` | `ccb7666` | Keep multiline form edits and cover focus-out and Tab regressions | Primary implementation, verification or documentation |
+| `2ae0d78` | `979a0be` | Audit form editing and restoration; fix commit, scripting and rendering failures | Primary implementation, verification or documentation |
+| `3f4a80e` | `3a8ab29` | Keep desktop print previews on the local viewer and backend | Primary implementation, verification or documentation |
+| `003fdce` | `bf7c810` | Prepare 0.1.0 experimental source release | Primary implementation, verification or documentation |
+| `a885161` | `80ebedb` | Record fresh 0.1.0 source-package verification | Primary implementation, verification or documentation |
+| `78a9ecd` | `6edecae` | Add Ubuntu 24.04 package and complete source builds | Primary implementation, verification or documentation |
+| `1dcd09b` | `4319f79` | Isolate Ubuntu desktop identity and add package regression coverage | Primary implementation, verification or documentation |
+| `dd26650` | `eb0bc8d` | Install profile icons under the packaged application ID | Primary implementation, verification or documentation |
+| `65203ea` | `d658d13` | Record Ubuntu package verification and normalize installed permissions | Primary implementation, verification or documentation |
+| `353ca70` | `969bfc3` | Fix daemon activation and mouse dropdowns in Ubuntu revision 2 | Primary implementation, verification or documentation |
+| `692e744` | `7358b90` | Align daemon activation names with the packaged application ID | Primary implementation, verification or documentation |
+| `9665670` | `c05c975` | Record verified Ubuntu revision 2 desktop and upgrade behavior | Primary implementation, verification or documentation |
+
+The 25 Codex-written patches are Poppler 0008–0009, 0022–0025 and 0040–0047,
+and Evince 0007–0008, 0010–0011 and 0018–0024. Their standard Codex co-author
+trailers are restored throughout the exported history and in the upstream
+commits used for future patch exports. Evince 0023–0024 previously contained
+only `Assisted-by` credits.
+The original engine and the other documented Claude contributions retain their
+existing Claude credits. Follow the [commit attribution policy](CONTRIBUTING.md#ai-attribution)
+for new commits and patch exports.

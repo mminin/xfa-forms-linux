@@ -1,5 +1,15 @@
 # Editing and printing audits
 
+## Attribution repair — 2026-10-21
+
+The published source history and upstream patch commits were repaired to retain
+Codex co-author and verified model trailers. Every historical code diff is
+unchanged, and the existing Claude trailers, human identities and original
+author/committer dates are preserved. Both complete patch series produce the
+same source trees as the original prerelease. The historical source candidate
+`003fdce` maps to `bf7c810`; the older verification entries below retain their
+original references. See [PR_PLAN.md](PR_PLAN.md) for the attribution map.
+
 ## Ubuntu revision 2 follow-up — 2026-10-20
 
 Revision 1's launcher smoke tests inherited the private data path in the session
